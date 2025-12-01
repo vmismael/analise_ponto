@@ -11,7 +11,6 @@ def limpar_celula_tempo(valor_celula):
     if pd.isna(valor_celula):
         return None
     s = str(valor_celula).strip()
-    # Remove caracteres não numéricos (exceto :)
     s = re.sub(r'[^\d:]', '', s) 
     if not s:
         return None
@@ -22,7 +21,6 @@ def limpar_celula_tempo(valor_celula):
         return None
 
 def processar_ponto(uploaded_file):
-    # Carregar o arquivo sem cabeçalho para manter o mapeamento das coordenadas
     try:
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file, header=None)
@@ -30,16 +28,15 @@ def processar_ponto(uploaded_file):
             df = pd.read_excel(uploaded_file, header=None)
     except Exception as e:
         st.error(f"Erro ao ler o arquivo: {e}")
-        return None, None
+        return None, None, 0
 
-    # 1. Obter Nome do Funcionário (A19 -> linha 18, col 0)
+    # 1. Obter Nome
     try:
         nome_funcionario = df.iloc[18, 0]
     except:
         nome_funcionario = "Nome não encontrado"
 
-    # 2. Extrair Horários Padrão (Mapeamento Fixo conforme sua descrição)
-    # Linhas: 10(SEG), 12(TER), 14(QUA), 17(QUI), 19(SEX), 22(SAB)
+    # 2. Extrair Horários Padrão
     linhas_horario = {
         'Seg': 10, 'Ter': 12, 'Qua': 14, 'Qui': 17, 'Sex': 19, 'Sáb': 22, 'Dom': None
     }
@@ -51,7 +48,6 @@ def processar_ponto(uploaded_file):
             agendamento[dia_chave] = None
             continue
         
-        # Colunas: W=22(Dia), Y=24(Ent1), AA=26(Sai1), AC=28(Ent2)
         ent1 = limpar_celula_tempo(df.iloc[indice_linha, 24])
         sai1 = limpar_celula_tempo(df.iloc[indice_linha, 26])
         ent2 = limpar_celula_tempo(df.iloc[indice_linha, 28])
@@ -62,15 +58,15 @@ def processar_ponto(uploaded_file):
             'std_ent2': ent2
         }
 
-    # 3. Processar Dados Reais (A partir da linha 32 -> índice 31)
+    # 3. Processar Dados Reais
     linhas_dados = df.iloc[31:].copy()
     dias_com_atraso = []
+    total_ocorrencias_geral = 0
     tolerancia = timedelta(minutes=5)
 
     for idx, row in linhas_dados.iterrows():
         data_str = str(row[0])
         
-        # Validação básica da linha de data
         if pd.isna(data_str) or '-' not in data_str:
             continue
             
@@ -81,7 +77,6 @@ def processar_ponto(uploaded_file):
         data_val = partes[0].strip()
         dow_val = partes[1].strip()
         
-        # Normalizar dia da semana
         if 'Sáb' in dow_val or 'Sab' in dow_val:
             chave_dow = 'Sáb'
         elif 'Dom' in dow_val:
@@ -94,20 +89,17 @@ def processar_ponto(uploaded_file):
             
         padrao = agendamento[chave_dow]
         
-        # Obter Horários Reais
-        real_ent1 = limpar_celula_tempo(row[2]) # Coluna C
-        real_sai1 = limpar_celula_tempo(row[5]) # Coluna F
-        real_ent2 = limpar_celula_tempo(row[8]) # Coluna I
+        real_ent1 = limpar_celula_tempo(row[2]) # Col C
+        real_sai1 = limpar_celula_tempo(row[5]) # Col F
+        real_ent2 = limpar_celula_tempo(row[8]) # Col I
         
-        atrasado = False
         motivos = []
 
         # --- Checagem 1: Entrada 1 ---
         if padrao['std_ent1'] and real_ent1:
             limite_ent1 = padrao['std_ent1'] + tolerancia
             if real_ent1 > limite_ent1:
-                atrasado = True
-                motivos.append(f"Atraso Entrada 1 (Chegou {str(real_ent1)[:-3]})")
+                motivos.append(f"Entrada 1 (Chegou {str(real_ent1)[:-3]})")
 
         # --- Checagem 2: Entrada 2 (Volta do Almoço) ---
         if padrao['std_ent2'] and padrao['std_sai1'] and real_sai1 and real_ent2:
@@ -115,51 +107,61 @@ def processar_ponto(uploaded_file):
             limite_ent2 = real_sai1 + duracao_almoco_padrao + tolerancia
             
             if real_ent2 > limite_ent2:
-                atrasado = True
-                motivos.append(f"Atraso Almoço (Limite {str(limite_ent2)[:-3]} vs Real {str(real_ent2)[:-3]})")
+                motivos.append(f"Almoço (Limite {str(limite_ent2)[:-3]} vs Real {str(real_ent2)[:-3]})")
                 
-        if atrasado:
+        # Se houve algum motivo de atraso nesse dia
+        if len(motivos) > 0:
+            qtd_dia = len(motivos)
+            total_ocorrencias_geral += qtd_dia
             dias_com_atraso.append({
                 'Data': data_val,
                 'Dia da Semana': chave_dow,
-                'Motivos': ", ".join(motivos)
+                'Ocorrências': qtd_dia,
+                'Detalhes': ", ".join(motivos)
             })
             
-    return nome_funcionario, pd.DataFrame(dias_com_atraso)
+    return nome_funcionario, pd.DataFrame(dias_com_atraso), total_ocorrencias_geral
 
 # --- Interface do Streamlit ---
 
 st.title("🕒 Analisador de Atrasos - Cartão Ponto")
-st.markdown("""
-Faça o upload do arquivo Excel ou CSV do cartão ponto. 
-O sistema analisará automaticamente atrasos na **Entrada 1** e no **Retorno do Almoço**.
-""")
 
 arquivo = st.file_uploader("Carregue o arquivo (XLSX ou CSV)", type=['csv', 'xlsx'])
 
 if arquivo:
     with st.spinner('Analisando dados...'):
-        nome, df_resultado = processar_ponto(arquivo)
+        nome, df_resultado, total_ocorrencias = processar_ponto(arquivo)
     
     if nome:
-        st.success("Análise concluída!")
-        st.subheader(f"Funcionário: {nome}")
+        st.success(f"Análise concluída para: **{nome}**")
         
+        # Exibindo métricas em colunas
         col1, col2 = st.columns(2)
+        
         with col1:
-            st.metric("Total de Dias Analisados", "30 dias (aprox)") # Pode ser dinamico se quiser
+            qtd_dias = len(df_resultado) if df_resultado is not None else 0
+            st.metric("Dias com Atraso", qtd_dias, help="Número de dias que tiveram pelo menos 1 atraso")
+            
         with col2:
-            qtd_atrasos = len(df_resultado) if df_resultado is not None else 0
-            st.metric("Dias com Atraso", qtd_atrasos, delta_color="inverse")
+            st.metric("Total de Ocorrências", total_ocorrencias, delta_color="inverse", help="Soma de todos os atrasos (Entrada + Almoço)")
         
         st.divider()
         
         if df_resultado is not None and not df_resultado.empty:
-            st.warning(f"Foram encontrados {len(df_resultado)} dias com irregularidades.")
+            st.warning(f"Detalhes das {total_ocorrencias} ocorrências encontradas:")
+            
+            # Formatação da tabela para destacar a quantidade
             st.dataframe(
                 df_resultado, 
                 use_container_width=True,
-                hide_index=True
+                hide_index=True,
+                column_config={
+                    "Ocorrências": st.column_config.NumberColumn(
+                        "Qtd",
+                        help="Quantidade de atrasos neste dia",
+                        format="%d"
+                    )
+                }
             )
         else:
             st.balloons()
