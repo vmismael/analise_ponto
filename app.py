@@ -4,21 +4,31 @@ from datetime import datetime, timedelta
 import re
 
 # Configuração da Página
-st.set_page_config(page_title="Analisador de Ponto - Apenas Chegadas", layout="wide")
+st.set_page_config(page_title="Analisador de Chegadas", layout="wide")
 
 def limpar_celula_tempo(valor_celula):
-    """Limpa e converte células do Excel para timedelta."""
+    """
+    Limpa e converte células do Excel para timedelta.
+    Agora suporta formatos com e sem segundos (HH:MM e HH:MM:SS).
+    """
     if pd.isna(valor_celula):
         return None
     s = str(valor_celula).strip()
+    # Mantém apenas dígitos e dois pontos
     s = re.sub(r'[^\d:]', '', s) 
     if not s:
         return None
     try:
+        # Tenta formato curto HH:MM (ex: 08:21)
         t = datetime.strptime(s, "%H:%M")
         return timedelta(hours=t.hour, minutes=t.minute)
-    except:
-        return None
+    except ValueError:
+        try:
+            # Se falhar, tenta formato longo HH:MM:SS (ex: 16:34:00)
+            t = datetime.strptime(s, "%H:%M:%S")
+            return timedelta(hours=t.hour, minutes=t.minute, seconds=t.second)
+        except ValueError:
+            return None
 
 def processar_ponto(uploaded_file):
     try:
@@ -77,7 +87,7 @@ def processar_ponto(uploaded_file):
         data_val = partes[0].strip()
         dow_val = partes[1].strip()
         
-        # Normalizar dia da semana
+        # Normalização do Dia da Semana
         if 'Sáb' in dow_val or 'Sab' in dow_val:
             chave_dow = 'Sáb'
         elif 'Dom' in dow_val:
@@ -90,34 +100,34 @@ def processar_ponto(uploaded_file):
             
         padrao = agendamento[chave_dow]
         
-        real_ent1 = limpar_celula_tempo(row[2]) # Col C
-        real_sai1 = limpar_celula_tempo(row[5]) # Col F
-        real_ent2 = limpar_celula_tempo(row[8]) # Col I
+        # Leitura dos horários reais (Colunas C, F, I)
+        real_ent1 = limpar_celula_tempo(row[2]) 
+        real_sai1 = limpar_celula_tempo(row[5]) 
+        real_ent2 = limpar_celula_tempo(row[8]) 
         
         motivos = []
 
-        # --- Checagem 1: Entrada 1 (Manhã) ---
+        # --- REGRA 1: Entrada 1 (Manhã) ---
         if padrao['std_ent1'] and real_ent1:
             limite_ent1 = padrao['std_ent1'] + tolerancia
             if real_ent1 > limite_ent1:
-                motivos.append(f"Atraso Entrada 1 (Chegou {str(real_ent1)[:-3]})")
+                motivos.append(f"Manhã (Chegou {str(real_ent1)})")
 
-        # --- Checagem 2: Entrada 2 (Volta do Almoço) ---
-        # A lógica aqui permite sair tarde, desde que volte dentro do tempo de duração + 5min
+        # --- REGRA 2: Entrada 2 (Volta do Almoço) ---
         if padrao['std_ent2'] and padrao['std_sai1'] and real_sai1 and real_ent2:
             duracao_almoco_padrao = padrao['std_ent2'] - padrao['std_sai1']
             limite_ent2 = real_sai1 + duracao_almoco_padrao + tolerancia
             
             if real_ent2 > limite_ent2:
-                motivos.append(f"Atraso Volta Almoço (Limite {str(limite_ent2)[:-3]} vs Real {str(real_ent2)[:-3]})")
+                motivos.append(f"Volta Almoço (Limite {str(limite_ent2)} vs Real {str(real_ent2)})")
                 
-        # Se houve algum motivo de atraso nesse dia
+        # Se houve ocorrências no dia
         if len(motivos) > 0:
             qtd_dia = len(motivos)
             total_ocorrencias_geral += qtd_dia
             dias_com_atraso.append({
                 'Data': data_val,
-                'Dia da Semana': chave_dow,
+                'Dia': chave_dow,
                 'Qtd': qtd_dia,
                 'Detalhes': ", ".join(motivos)
             })
@@ -126,13 +136,13 @@ def processar_ponto(uploaded_file):
 
 # --- Interface do Streamlit ---
 
-st.title("🕒 Analisador de Ponto - Foco em Chegadas")
-st.markdown("Monitora apenas **Entrada 1** e **Retorno do Almoço**.")
+st.title("🕒 Analisador de Chegadas")
+st.markdown("Focado em identificar atrasos na **Entrada** e no **Retorno do Almoço** (Apenas chegadas).")
 
 arquivo = st.file_uploader("Carregue o arquivo (XLSX ou CSV)", type=['csv', 'xlsx'])
 
 if arquivo:
-    with st.spinner('Analisando dados...'):
+    with st.spinner('Processando dados...'):
         nome, df_resultado, total_ocorrencias = processar_ponto(arquivo)
     
     if nome:
@@ -142,15 +152,15 @@ if arquivo:
         
         with col1:
             qtd_dias = len(df_resultado) if df_resultado is not None else 0
-            st.metric("Dias com Atraso", qtd_dias)
+            st.metric("Dias com Atraso", qtd_dias, help="Dias que tiveram pelo menos 1 problema")
             
         with col2:
-            st.metric("Total de Ocorrências", total_ocorrencias, delta_color="inverse")
+            st.metric("Total de Ocorrências", total_ocorrencias, delta_color="inverse", help="Soma total de atrasos (Ex: Manhã + Almoço no mesmo dia conta como 2)")
         
         st.divider()
         
         if df_resultado is not None and not df_resultado.empty:
-            st.warning(f"Foram encontrados {total_ocorrencias} atrasos nas chegadas:")
+            st.warning(f"Lista de Irregularidades ({total_ocorrencias} ocorrências):")
             
             st.dataframe(
                 df_resultado, 
@@ -158,11 +168,12 @@ if arquivo:
                 hide_index=True,
                 column_config={
                     "Qtd": st.column_config.NumberColumn(
-                        "Qtd",
-                        format="%d"
+                        "Falhas",
+                        format="%d",
+                        help="Quantidade de falhas neste dia"
                     )
                 }
             )
         else:
             st.balloons()
-            st.success("Parabéns! Nenhum atraso de chegada encontrado.")
+            st.success("Tudo limpo! Nenhum atraso de chegada detectado.")
