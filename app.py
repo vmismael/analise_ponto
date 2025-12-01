@@ -153,7 +153,7 @@ if pagina == "📂 Análise de Ponto":
         if nome:
             st.success(f"Funcionário: **{nome}**")
             
-            # Guardar o total na sessão para usar na outra página (opcional, mas útil)
+            # Guardar o total na sessão para usar na outra página
             st.session_state['ultimo_total_atrasos'] = total_ocorrencias
             
             col1, col2 = st.columns(2)
@@ -277,25 +277,9 @@ elif pagina == "💰 Calc. Vale Alimentação":
     else:
         st.error(mensagem_penalidade)
 
-    # Detalhe do cálculo matemático (opcional, para transparência)
+    # Detalhe do cálculo matemático
     with st.expander("Ver detalhes do cálculo"):
         st.write(f"**Cargo:** {cargo_selecionado}")
         st.write(f"**Valor Diário (Base/30):** R$ {valor_diario:.4f}")
         st.write(f"**Ocorrências:** {qtd_atrasos}")
         st.write(f"**Regra Aplicada:** {mensagem_penalidade}")
-```
-
-### O que há de novo:
-
-1.  **Menu Lateral:** Agora você verá uma barra à esquerda para escolher entre "Análise de Ponto" (a ferramenta que já criamos) e "Calc. Vale Alimentação" (a nova página).
-2.  **Página de Cálculo:**
-    * Você seleciona o cargo (Junior, Premium, Senior, Master).
-    * Você digita o número de atrasos.
-    * **Integração Inteligente:** Se você analisou um arquivo na primeira página, o sistema "sugere" automaticamente o número de atrasos encontrados no campo de input da calculadora (mas você pode alterar manualmente se quiser).
-3.  **Regras Aplicadas:**
-    * **< 3 atrasos:** Valor integral.
-    * **= 3 atrasos:** Desconta o valor de 2 dias (Valor Base / 30 * 2).
-    * **4 a 7 atrasos:** Desconta o valor de 7 dias (Valor Base / 30 * 7).
-    * **8+ atrasos:** Valor fixo de R$ 148,27.
-
-Basta salvar e rodar `streamlit run app.py` novamente!
