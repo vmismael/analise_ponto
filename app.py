@@ -4,31 +4,41 @@ from datetime import datetime, timedelta
 import re
 
 # Configuração da Página
-st.set_page_config(page_title="Analisador de Chegadas", layout="wide")
+st.set_page_config(page_title="Analisador de Ponto", layout="wide")
 
 def limpar_celula_tempo(valor_celula):
     """
-    Limpa e converte células do Excel para timedelta.
-    Agora suporta formatos com e sem segundos (HH:MM e HH:MM:SS).
+    Lê o horário do Excel. 
+    IMPORTANTE: Lê segundos se existirem (para não dar erro), 
+    mas retornaremos objetos de tempo que podem ser formatados depois.
     """
     if pd.isna(valor_celula):
         return None
     s = str(valor_celula).strip()
-    # Mantém apenas dígitos e dois pontos
+    # Mantém apenas números e dois pontos
     s = re.sub(r'[^\d:]', '', s) 
     if not s:
         return None
     try:
-        # Tenta formato curto HH:MM (ex: 08:21)
+        # Tenta formato curto HH:MM
         t = datetime.strptime(s, "%H:%M")
         return timedelta(hours=t.hour, minutes=t.minute)
     except ValueError:
         try:
-            # Se falhar, tenta formato longo HH:MM:SS (ex: 16:34:00)
+            # Tenta formato longo HH:MM:SS (necessário para ler seu arquivo corretamente)
             t = datetime.strptime(s, "%H:%M:%S")
             return timedelta(hours=t.hour, minutes=t.minute, seconds=t.second)
         except ValueError:
             return None
+
+def formatar_visual(td):
+    """Remove os segundos apenas para a visualização no site (HH:MM)"""
+    if td is None:
+        return ""
+    total_segundos = int(td.total_seconds())
+    horas = total_segundos // 3600
+    minutos = (total_segundos % 3600) // 60
+    return f"{horas:02d}:{minutos:02d}"
 
 def processar_ponto(uploaded_file):
     try:
@@ -100,7 +110,7 @@ def processar_ponto(uploaded_file):
             
         padrao = agendamento[chave_dow]
         
-        # Leitura dos horários reais (Colunas C, F, I)
+        # Leitura dos horários reais
         real_ent1 = limpar_celula_tempo(row[2]) 
         real_sai1 = limpar_celula_tempo(row[5]) 
         real_ent2 = limpar_celula_tempo(row[8]) 
@@ -111,7 +121,7 @@ def processar_ponto(uploaded_file):
         if padrao['std_ent1'] and real_ent1:
             limite_ent1 = padrao['std_ent1'] + tolerancia
             if real_ent1 > limite_ent1:
-                motivos.append(f"Manhã (Chegou {str(real_ent1)})")
+                motivos.append(f"Manhã ({formatar_visual(real_ent1)})")
 
         # --- REGRA 2: Entrada 2 (Volta do Almoço) ---
         if padrao['std_ent2'] and padrao['std_sai1'] and real_sai1 and real_ent2:
@@ -119,7 +129,8 @@ def processar_ponto(uploaded_file):
             limite_ent2 = real_sai1 + duracao_almoco_padrao + tolerancia
             
             if real_ent2 > limite_ent2:
-                motivos.append(f"Volta Almoço (Limite {str(limite_ent2)} vs Real {str(real_ent2)})")
+                # Mostra o limite permitido vs a hora que chegou
+                motivos.append(f"Volta Almoço (Limite {formatar_visual(limite_ent2)} vs Real {formatar_visual(real_ent2)})")
                 
         # Se houve ocorrências no dia
         if len(motivos) > 0:
@@ -137,7 +148,6 @@ def processar_ponto(uploaded_file):
 # --- Interface do Streamlit ---
 
 st.title("🕒 Analisador de Chegadas")
-st.markdown("Focado em identificar atrasos na **Entrada** e no **Retorno do Almoço** (Apenas chegadas).")
 
 arquivo = st.file_uploader("Carregue o arquivo (XLSX ou CSV)", type=['csv', 'xlsx'])
 
@@ -152,15 +162,15 @@ if arquivo:
         
         with col1:
             qtd_dias = len(df_resultado) if df_resultado is not None else 0
-            st.metric("Dias com Atraso", qtd_dias, help="Dias que tiveram pelo menos 1 problema")
+            st.metric("Dias com Atraso", qtd_dias)
             
         with col2:
-            st.metric("Total de Ocorrências", total_ocorrencias, delta_color="inverse", help="Soma total de atrasos (Ex: Manhã + Almoço no mesmo dia conta como 2)")
+            st.metric("Total de Ocorrências", total_ocorrencias, delta_color="inverse")
         
         st.divider()
         
         if df_resultado is not None and not df_resultado.empty:
-            st.warning(f"Lista de Irregularidades ({total_ocorrencias} ocorrências):")
+            st.warning(f"Lista de Irregularidades ({total_ocorrencias}):")
             
             st.dataframe(
                 df_resultado, 
@@ -168,9 +178,13 @@ if arquivo:
                 hide_index=True,
                 column_config={
                     "Qtd": st.column_config.NumberColumn(
-                        "Falhas",
+                        "Qtd",
                         format="%d",
-                        help="Quantidade de falhas neste dia"
+                        width="small"
+                    ),
+                    "Detalhes": st.column_config.TextColumn(
+                        "Detalhes do Atraso",
+                        width="large"
                     )
                 }
             )
