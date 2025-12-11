@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 import re
 import io
-from fuzzywuzzy import fuzz 
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Gestão Integrada (RH & Financeiro)", layout="wide")
@@ -145,156 +144,13 @@ def buscar_por_classificacao(df, codigo):
     return 0.0
 
 # ==============================================================================
-# FUNÇÕES AUXILIARES - CONCILIAÇÃO (NOTAS vs BALANCETE)
-# ==============================================================================
-
-def limpar_valor_conciliacao(valor):
-    """Converte string financeira ou float do Excel para float puro."""
-    if pd.isna(valor) or str(valor).strip() == '':
-        return None
-    
-    if isinstance(valor, (int, float)):
-        return float(valor)
-    
-    v_str = str(valor).strip().upper()
-    v_str = v_str.replace('D', '').replace('C', '')
-    v_str = v_str.replace('R$', '').strip()
-    
-    try:
-        if ',' in v_str and '.' in v_str:
-            v_str = v_str.replace('.', '').replace(',', '.')
-        elif ',' in v_str:
-            v_str = v_str.replace(',', '.')
-            
-        return float(v_str)
-    except ValueError:
-        return None
-
-def carregar_balancete_robusto(file, col_valor_idx=16, col_nome_idx=2):
-    """
-    Carrega Balancete pulando as primeiras linhas para evitar erro de cabeçalho.
-    """
-    try:
-        # PULA AS 4 PRIMEIRAS LINHAS (skiprows=4)
-        if file.name.endswith('.csv'):
-            # header=None para usar índices numéricos. skiprows=4 começa da linha 5.
-            df = pd.read_csv(file, header=None, sep=None, engine='python', skiprows=4)
-        else:
-            df = pd.read_excel(file, header=None, skiprows=4)
-
-        processed_data = []
-        
-        # Verifica se tem colunas suficientes
-        if df.shape[1] <= col_valor_idx:
-            # Se não tiver a coluna Q (16), tenta avisar
-            st.error(f"Erro no Balancete: O arquivo foi lido mas tem apenas {df.shape[1]} colunas. A Coluna Q (índice 16) não existe.")
-            return pd.DataFrame()
-
-        for index, row in df.iterrows():
-            if len(row) > col_valor_idx:
-                raw_val = row[col_valor_idx]
-                
-                # Tenta pegar o nome na coluna C (idx 2)
-                nome = "Sem Descrição"
-                if len(row) > col_nome_idx:
-                    nome = row[col_nome_idx]
-                elif len(row) > 0:
-                    nome = row[0] # Fallback para coluna A
-
-                val_float = limpar_valor_conciliacao(raw_val)
-                
-                if val_float is not None and val_float != 0:
-                    processed_data.append({
-                        'Origem_Linha': index + 5, # Ajusta numero da linha visual (+4 skiprows +1 index)
-                        'Conta_Balancete': nome,
-                        'Valor_Balancete': val_float
-                    })
-        return pd.DataFrame(processed_data)
-    except Exception as e:
-        st.error(f"Erro Crítico ao ler Balancete: {e}")
-        return pd.DataFrame()
-
-def carregar_notas_generico(file_or_data, is_excel_tab=False, sheet_name=None, col_valor_idx=1, col_nome_idx=0):
-    try:
-        if is_excel_tab:
-            df = pd.read_excel(file_or_data, sheet_name=sheet_name, header=None)
-        else:
-            if file_or_data.name.endswith('.csv'):
-                df = pd.read_csv(file_or_data, header=None, sep=None, engine='python')
-            else:
-                df = pd.read_excel(file_or_data, header=None)
-
-        processed_data = []
-        
-        for index, row in df.iterrows():
-            if len(row) > col_valor_idx:
-                raw_val = row[col_valor_idx] # Coluna B
-                nome = row[col_nome_idx]     # Coluna A
-                
-                val_float = limpar_valor_conciliacao(raw_val)
-                
-                if val_float is not None and val_float > 0:
-                    nome_str = str(nome).lower()
-                    termos_ignorados = ['débito', 'valor', 'total', 'nan', 'histórico', 'descrição', 'saldo']
-                    if not any(termo in nome_str for termo in termos_ignorados):
-                        processed_data.append({
-                            'Nota_Linha': index + 1,
-                            'Descricao_Nota': nome,
-                            'Valor_Nota': val_float
-                        })
-        return pd.DataFrame(processed_data)
-    except Exception as e:
-        st.error(f"Erro ao ler Notas: {e}")
-        return pd.DataFrame()
-
-def encontrar_correspondencia(row_nota, df_balancete):
-    valor_procurado = row_nota['Valor_Nota']
-    desc_nota = str(row_nota['Descricao_Nota'])
-    
-    matches = df_balancete[
-        (df_balancete['Valor_Balancete'] > valor_procurado - 0.01) & 
-        (df_balancete['Valor_Balancete'] < valor_procurado + 0.01)
-    ].copy()
-    
-    status = "Não Encontrado"
-    detalhe = ""
-    match_row = None
-    
-    if len(matches) == 0:
-        status = "Divergente (Não achou valor)"
-    elif len(matches) == 1:
-        status = "Conferido (Valor Único)"
-        match_row = matches.iloc[0]
-    else:
-        status = "Conferido (Desempate por Nome)"
-        melhor_score = 0
-        melhor_match = None
-        
-        for idx, m_row in matches.iterrows():
-            score = fuzz.partial_ratio(desc_nota.lower(), str(m_row['Conta_Balancete']).lower())
-            if score > melhor_score:
-                melhor_score = score
-                melhor_match = m_row
-        
-        match_row = melhor_match
-        detalhe = f"Score Similaridade: {melhor_score}"
-
-    return status, match_row, detalhe
-
-# ==============================================================================
 # MENU LATERAL
 # ==============================================================================
 
 st.sidebar.title("Navegação")
-opcoes = [
-    "📂 Análise de Ponto", 
-    "💰 Calc. Vale Alimentação", 
-    "📊 Análise DRE",
-    "🕵️ Conciliação Notas vs Balancete"
-]
-pagina = st.sidebar.radio("Ir para:", opcoes)
+pagina = st.sidebar.radio("Ir para:", ["📂 Análise de Ponto", "💰 Calc. Vale Alimentação", "📊 Análise DRE"])
 
-st.sidebar.divider()
+st.sidebar.markdown("---")
 
 # ==============================================================================
 # PÁGINA 1: ANÁLISE DE PONTO
@@ -450,6 +306,7 @@ elif pagina == "📊 Análise DRE":
             # Cálculos
             rol_atual = receita_bruta - deducoes
             
+            # Evita divisão por zero
             if rol_atual and rol_atual != 0:
                 margem_bruta = (rol_atual - custos_servicos) / rol_atual
                 margem_liquida = lucro_liquido_atual / rol_atual
@@ -461,7 +318,7 @@ elif pagina == "📊 Análise DRE":
                 margem_ebitda = 0
                 eficiencia_operacional = 0
 
-            # Crescimento
+            # Crescimento (depende do input manual)
             if rol_anterior and rol_anterior != 0:
                 crescimento_rol = (rol_atual - rol_anterior) / rol_anterior
             else:
@@ -506,133 +363,3 @@ elif pagina == "📊 Análise DRE":
         except Exception as e:
             st.error(f"Erro ao processar o arquivo: {e}")
             st.info("Verifique se o arquivo tem as colunas 'Classificação' e 'Movimento'.")
-
-# ==============================================================================
-# PÁGINA 4: CONCILIAÇÃO DE NOTAS
-# ==============================================================================
-
-elif pagina == "🕵️ Conciliação Notas vs Balancete":
-    st.title("🕵️ Conciliação: Notas Fiscais vs Balancete")
-    st.markdown("Selecione o Mês nas Planilhas de Notas (Esquerda) e cruze com o Balancete (Direita).")
-
-    col1, col2 = st.columns(2)
-
-    opcoes_meses = {}
-
-    with col1:
-        st.subheader("1. Planilha de Notas (Esquerda)")
-        notas_files = st.file_uploader(
-            "Upload Planilhas de Notas (Vários CSVs ou 1 Excel)", 
-            type=['csv', 'xlsx'], 
-            accept_multiple_files=True, 
-            key="conc_notas"
-        )
-        
-        if notas_files:
-            # Lógica para suportar tanto Excel com abas quanto CSVs separados
-            if len(notas_files) > 1:
-                for f in notas_files:
-                    opcoes_meses[f.name] = {'tipo': 'arquivo', 'dados': f}
-            elif len(notas_files) == 1:
-                arquivo_unico = notas_files[0]
-                if arquivo_unico.name.endswith('.xlsx'):
-                    try:
-                        xls = pd.ExcelFile(arquivo_unico)
-                        for aba in xls.sheet_names:
-                            opcoes_meses[aba] = {'tipo': 'aba_excel', 'dados': arquivo_unico, 'nome_aba': aba}
-                    except:
-                        opcoes_meses[arquivo_unico.name] = {'tipo': 'arquivo', 'dados': arquivo_unico}
-                else:
-                    opcoes_meses[arquivo_unico.name] = {'tipo': 'arquivo', 'dados': arquivo_unico}
-
-    with col2:
-        st.subheader("2. Balancete (Direita)")
-        balancete_file = st.file_uploader("Upload Balancete (CSV ou XLSX)", type=['csv', 'xlsx'], key="conc_bal")
-
-    if opcoes_meses and balancete_file:
-        st.divider()
-        st.markdown("### Seleção do Período")
-        
-        chaves_ordenadas = sorted(list(opcoes_meses.keys()))
-        mes_escolhido = st.selectbox("Escolha o Mês/Arquivo de Notas para analisar:", chaves_ordenadas)
-        
-        if st.button("Iniciar Conciliação"):
-            selecao = opcoes_meses[mes_escolhido]
-            
-            with st.spinner('Processando dados...'):
-                
-                # Leitura robusta do Balancete (Skipping 4 linhas iniciais)
-                df_balancete = carregar_balancete_robusto(balancete_file, col_valor_idx=16, col_nome_idx=2)
-                
-                # Leitura das Notas
-                if selecao['tipo'] == 'aba_excel':
-                    df_notas = carregar_notas_generico(
-                        selecao['dados'], 
-                        is_excel_tab=True, 
-                        sheet_name=selecao['nome_aba'], 
-                        col_valor_idx=1, col_nome_idx=0
-                    )
-                else:
-                    df_notas = carregar_notas_generico(
-                        selecao['dados'], 
-                        is_excel_tab=False, 
-                        col_valor_idx=1, col_nome_idx=0
-                    )
-                
-                if df_balancete.empty:
-                    st.error("Erro: Balancete vazio ou colunas não encontradas. Verifique se o arquivo tem a coluna Q (16) preenchida.")
-                elif df_notas.empty:
-                    st.error("Erro: Nenhuma nota válida encontrada na planilha de notas (Coluna B).")
-                else:
-                    # Cruzamento
-                    resultados = []
-                    progresso = st.progress(0)
-                    total_notas = len(df_notas)
-                    
-                    for i, row in df_notas.iterrows():
-                        status, match_row, detalhe = encontrar_correspondencia(row, df_balancete)
-                        
-                        res = {
-                            'NOTA_Descricao': row['Descricao_Nota'],
-                            'NOTA_Valor': row['Valor_Nota'],
-                            'STATUS': status,
-                            'BALANCETE_Conta': match_row['Conta_Balancete'] if match_row is not None else '---',
-                            'BALANCETE_Valor': match_row['Valor_Balancete'] if match_row is not None else 0.0,
-                            'Detalhe': detalhe
-                        }
-                        resultados.append(res)
-                        progresso.progress((i + 1) / total_notas)
-                    
-                    df_final = pd.DataFrame(resultados)
-                    
-                    st.success("Análise Concluída!")
-                    
-                    total = len(df_final)
-                    divergentes = len(df_final[df_final['STATUS'].str.contains("Divergente")])
-                    conferidos = total - divergentes
-                    
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Total Lançamentos", total)
-                    m2.metric("Conferidos", conferidos)
-                    m3.metric("Divergentes", divergentes, delta_color="inverse")
-                    
-                    st.subheader("Detalhamento")
-                    filtro = st.radio("Filtro:", ["Tudo", "Apenas Divergentes", "Apenas Conferidos"], horizontal=True)
-                    
-                    df_show = df_final
-                    if filtro == "Apenas Divergentes":
-                        df_show = df_final[df_final['STATUS'].str.contains("Divergente")]
-                    elif filtro == "Apenas Conferidos":
-                        df_show = df_final[df_final['STATUS'].str.contains("Conferido")]
-                    
-                    st.dataframe(
-                        df_show.style.format({
-                            'NOTA_Valor': 'R$ {:,.2f}', 
-                            'BALANCETE_Valor': 'R$ {:,.2f}'
-                        }).map(lambda v: 'color: red;' if 'Divergente' in str(v) else ('color: green;' if 'Conferido' in str(v) else ''), subset=['STATUS'])
-                    )
-
-    elif not notas_files:
-        st.info("Aguardando upload das Planilhas de Notas (Esquerda).")
-    elif not balancete_file:
-        st.info("Aguardando upload do Balancete (Direita).")
