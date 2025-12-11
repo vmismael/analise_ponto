@@ -149,11 +149,15 @@ def buscar_por_classificacao(df, codigo):
 # ==============================================================================
 
 def limpar_valor_conciliacao(valor):
-    """Converte string financeira brasileira (ex: 1.000,00D) para float."""
+    """Converte string financeira ou float do Excel para float puro."""
     if pd.isna(valor) or valor == '':
         return None
     
-    # Converte para string
+    # Se já for número (comum em Excel), retorna direto
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    
+    # Converte para string se for texto
     v_str = str(valor).strip().upper()
     
     # Remove letras comuns em balancetes (D = Débito, C = Crédito)
@@ -175,13 +179,19 @@ def limpar_valor_conciliacao(valor):
 
 def carregar_balancete(file, col_valor_idx=16, col_nome_idx=2):
     try:
-        df = pd.read_csv(file, header=None, dtype=str)
+        # Verifica extensão para usar o leitor correto
+        if file.name.endswith('.csv'):
+            df = pd.read_csv(file, header=None, dtype=str)
+        else:
+            df = pd.read_excel(file, header=None)
+
         processed_data = []
         
         for index, row in df.iterrows():
             if len(row) > col_valor_idx:
                 raw_val = row[col_valor_idx]
                 nome = row[col_nome_idx] if len(row) > col_nome_idx else "Sem Descrição"
+                
                 val_float = limpar_valor_conciliacao(raw_val)
                 
                 if val_float is not None and val_float != 0:
@@ -197,17 +207,23 @@ def carregar_balancete(file, col_valor_idx=16, col_nome_idx=2):
 
 def carregar_notas(file, col_valor_idx=1, col_nome_idx=0):
     try:
-        df = pd.read_csv(file, header=None, dtype=str)
+        # Verifica extensão para usar o leitor correto
+        if file.name.endswith('.csv'):
+            df = pd.read_csv(file, header=None, dtype=str)
+        else:
+            df = pd.read_excel(file, header=None)
+
         processed_data = []
         
         for index, row in df.iterrows():
             if len(row) > col_valor_idx:
                 raw_val = row[col_valor_idx]
                 nome = row[col_nome_idx]
+                
                 val_float = limpar_valor_conciliacao(raw_val)
                 
                 if val_float is not None and val_float > 0:
-                    if str(nome).lower() not in ['débito', 'valor', 'total', 'nan']:
+                    if str(nome).lower() not in ['débito', 'valor', 'total', 'nan', 'histórico']:
                         processed_data.append({
                             'Nota_Linha': index + 1,
                             'Descricao_Nota': nome,
@@ -492,11 +508,13 @@ elif pagina == "🕵️ Conciliação Notas vs Balancete":
 
     with col1:
         st.subheader("1. Balancete")
-        balancete_file = st.file_uploader("Upload Balancete (CSV)", type=['csv'], key="conc_bal")
+        # Aceita CSV e XLSX
+        balancete_file = st.file_uploader("Upload Balancete (CSV ou XLSX)", type=['csv', 'xlsx'], key="conc_bal")
 
     with col2:
         st.subheader("2. Planilhas de Notas")
-        notas_files = st.file_uploader("Upload Notas (CSVs)", type=['csv'], accept_multiple_files=True, key="conc_notas")
+        # Aceita CSV e XLSX
+        notas_files = st.file_uploader("Upload Notas (CSVs ou XLSX)", type=['csv', 'xlsx'], accept_multiple_files=True, key="conc_notas")
 
     # Dicionário para organizar arquivos por mês
     arquivos_por_mes = {}
@@ -524,7 +542,7 @@ elif pagina == "🕵️ Conciliação Notas vs Balancete":
                 df_notas = carregar_notas(file_nota, col_valor_idx=1, col_nome_idx=0)
                 
                 if df_balancete.empty or df_notas.empty:
-                    st.error("Não foi possível processar os arquivos. Verifique se são CSVs válidos e possuem os dados nas colunas corretas (Balancete: Col Q, Notas: Col B).")
+                    st.error("Não foi possível processar os arquivos. Verifique se são válidos (CSV ou XLSX) e possuem os dados nas colunas corretas (Balancete: Col Q, Notas: Col B).")
                 else:
                     resultados = []
                     
@@ -575,4 +593,4 @@ elif pagina == "🕵️ Conciliação Notas vs Balancete":
                     )
 
     elif not balancete_file and not arquivos_por_mes:
-        st.info("Aguardando upload dos arquivos.")
+        st.info("Aguardando upload dos arquivos (CSV ou XLSX).")
