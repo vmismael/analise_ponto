@@ -300,4 +300,66 @@ elif pagina == "📊 Análise DRE":
             deducoes = buscar_por_classificacao(df, '03.1.2')
             custos_servicos = buscar_por_classificacao(df, '04.1')
             lucro_liquido_atual = buscar_por_classificacao(df, '05.1.1.01.001')
-            ebitda_valor = buscar_por_classificacao(df, '0
+            ebitda_valor = buscar_por_classificacao(df, '04.2.9')
+            despesas_operacionais = buscar_por_classificacao(df, '04.2')
+
+            # Cálculos
+            rol_atual = receita_bruta - deducoes
+            
+            # Evita divisão por zero
+            if rol_atual and rol_atual != 0:
+                margem_bruta = (rol_atual - custos_servicos) / rol_atual
+                margem_liquida = lucro_liquido_atual / rol_atual
+                margem_ebitda = ebitda_valor / rol_atual
+                eficiencia_operacional = despesas_operacionais / rol_atual
+            else:
+                margem_bruta = 0
+                margem_liquida = 0
+                margem_ebitda = 0
+                eficiencia_operacional = 0
+
+            # Crescimento (depende do input manual)
+            if rol_anterior and rol_anterior != 0:
+                crescimento_rol = (rol_atual - rol_anterior) / rol_anterior
+            else:
+                crescimento_rol = 0
+                
+            if lucro_anterior and lucro_anterior != 0:
+                crescimento_lucro = (lucro_liquido_atual - lucro_anterior) / lucro_anterior
+            else:
+                crescimento_lucro = 0
+
+            # --- Exibição dos Resultados ---
+            st.divider()
+            st.subheader("Resultados Consolidados")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("ROL Atual", f"R$ {rol_atual:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
+                st.metric("Lucro Líquido", f"R$ {lucro_liquido_atual:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
+                
+            with col2:
+                st.metric("Margem Bruta", f"{margem_bruta:.2%}")
+                st.metric("Margem Líquida", f"{margem_liquida:.2%}")
+
+            with col3:
+                st.metric("Margem EBITDA", f"{margem_ebitda:.2%}")
+                st.metric("Efic. Operacional", f"{eficiencia_operacional:.2%}")
+
+            with col4:
+                st.metric("Cresc. ROL", f"{crescimento_rol:.2%}", delta_color="normal")
+                st.metric("Cresc. Lucro", f"{crescimento_lucro:.2%}", delta_color="normal")
+
+            st.divider()
+            
+            with st.expander("Verificar valores extraídos"):
+                st.write(f"**Receita Bruta (03.1.1):** {receita_bruta}")
+                st.write(f"**Deduções (03.1.2):** {deducoes}")
+                st.write(f"**Custos (04.1):** {custos_servicos}")
+                st.write(f"**EBITDA Base (04.2.9):** {ebitda_valor}")
+                st.write(f"**Despesas Operacionais (04.2):** {despesas_operacionais}")
+
+        except Exception as e:
+            st.error(f"Erro ao processar o arquivo: {e}")
+            st.info("Verifique se o arquivo tem as colunas 'Classificação' e 'Movimento'.")
