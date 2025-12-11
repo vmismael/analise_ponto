@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import re
 import io
-from fuzzywuzzy import fuzz
+from fuzzywuzzy import fuzz 
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Gestão Integrada (RH & Financeiro)", layout="wide")
@@ -150,18 +150,18 @@ def buscar_por_classificacao(df, codigo):
 
 def limpar_valor_conciliacao(valor):
     """Converte string financeira ou float do Excel para float puro."""
-    if pd.isna(valor) or valor == '':
+    if pd.isna(valor) or str(valor).strip() == '':
         return None
     
     if isinstance(valor, (int, float)):
         return float(valor)
     
-    # Remove aspas que podem vir no CSV
-    v_str = str(valor).strip().replace('"', '').replace("'", "").upper()
+    v_str = str(valor).strip().upper()
     v_str = v_str.replace('D', '').replace('C', '')
     v_str = v_str.replace('R$', '').strip()
     
     try:
+        # Lógica BR: Se tiver vírgula e ponto, assume ponto=milhar, virgula=decimal
         if ',' in v_str and '.' in v_str:
             v_str = v_str.replace('.', '').replace(',', '.')
         elif ',' in v_str:
@@ -171,21 +171,39 @@ def limpar_valor_conciliacao(valor):
     except ValueError:
         return None
 
-def carregar_balancete(file, col_valor_idx=16, col_nome_idx=2):
+def carregar_balancete_robusto(file, col_valor_idx=16, col_nome_idx=2):
+    """
+    Carrega Balancete tentando forçar a leitura correta das colunas
+    mesmo que o arquivo CSV esteja mal formatado.
+    Col Q = 16 (0-based).
+    """
     try:
+        # Tenta ler como CSV usando engine python que é mais permissiva com separadores
+        # Usa header=None para garantir que pegamos pelo índice absoluto
         if file.name.endswith('.csv'):
-            # header=None para usar índices numéricos
-            df = pd.read_csv(file, header=None, dtype=str)
+            df = pd.read_csv(file, header=None, sep=None, engine='python')
         else:
             df = pd.read_excel(file, header=None)
 
         processed_data = []
         
+        # Verifica se o dataframe tem colunas suficientes
+        if df.shape[1] <= col_valor_idx:
+            st.error(f"Erro no Balancete: O arquivo lido tem apenas {df.shape[1]} colunas, mas buscamos a coluna {col_valor_idx+1} (Q). Tente converter o arquivo para Excel (.xlsx) ou verifique o delimitador.")
+            return pd.DataFrame()
+
         for index, row in df.iterrows():
+            # Proteção extra de índice
             if len(row) > col_valor_idx:
                 raw_val = row[col_valor_idx]
-                nome = row[col_nome_idx] if len(row) > col_nome_idx else "Sem Descrição"
                 
+                # Tenta pegar o nome na coluna C (idx 2), se falhar pega na B (idx 1) ou A (idx 0)
+                nome = "Sem Descrição"
+                if len(row) > col_nome_idx:
+                    nome = row[col_nome_idx]
+                elif len(row) > 0:
+                    nome = row[0]
+
                 val_float = limpar_valor_conciliacao(raw_val)
                 
                 if val_float is not None and val_float != 0:
@@ -196,19 +214,20 @@ def carregar_balancete(file, col_valor_idx=16, col_nome_idx=2):
                     })
         return pd.DataFrame(processed_data)
     except Exception as e:
-        st.error(f"Erro ao ler Balancete: {e}")
+        st.error(f"Erro Crítico ao ler Balancete: {e}")
         return pd.DataFrame()
 
-def carregar_notas_generico(file_or_df, col_valor_idx=1, col_nome_idx=0, is_dataframe=False):
-    """Lê notas de um arquivo ou DataFrame, ignorando linhas vazias ou cabeçalhos."""
+def carregar_notas_generico(file_or_data, is_excel_tab=False, sheet_name=None, col_valor_idx=1, col_nome_idx=0):
     try:
-        if is_dataframe:
-            df = file_or_df
+        if is_excel_tab:
+            # Lê aba específica de um arquivo Excel aberto
+            df = pd.read_excel(file_or_data, sheet_name=sheet_name, header=None)
         else:
-            if file_or_df.name.endswith('.csv'):
-                df = pd.read_csv(file_or_df, header=None, dtype=str)
+            # Lê arquivo CSV ou Excel único
+            if file_or_data.name.endswith('.csv'):
+                df = pd.read_csv(file_or_data, header=None, sep=None, engine='python')
             else:
-                df = pd.read_excel(file_or_df, header=None)
+                df = pd.read_excel(file_or_data, header=None)
 
         processed_data = []
         
@@ -219,13 +238,11 @@ def carregar_notas_generico(file_or_df, col_valor_idx=1, col_nome_idx=0, is_data
                 
                 val_float = limpar_valor_conciliacao(raw_val)
                 
-                # Validação mais rigorosa para ignorar cabeçalhos
+                # Filtros para ignorar cabeçalhos e linhas irrelevantes
                 if val_float is not None and val_float > 0:
-                    nome_str = str(nome).lower() if pd.notna(nome) else ""
-                    # Lista de termos para ignorar (cabeçalhos comuns)
-                    termos_ignorados = ['débito', 'valor', 'total', 'nan', 'histórico', 'descrição', 'crédito', 'saldo']
-                    
-                    if nome_str not in termos_ignorados and not nome_str.startswith('unnamed'):
+                    nome_str = str(nome).lower()
+                    termos_ignorados = ['débito', 'valor', 'total', 'nan', 'histórico', 'descrição', 'saldo', 'conta']
+                    if not any(termo in nome_str for termo in termos_ignorados):
                         processed_data.append({
                             'Nota_Linha': index + 1,
                             'Descricao_Nota': nome,
@@ -240,7 +257,6 @@ def encontrar_correspondencia(row_nota, df_balancete):
     valor_procurado = row_nota['Valor_Nota']
     desc_nota = str(row_nota['Descricao_Nota'])
     
-    # Margem de erro mínima para float
     matches = df_balancete[
         (df_balancete['Valor_Balancete'] > valor_procurado - 0.01) & 
         (df_balancete['Valor_Balancete'] < valor_procurado + 0.01)
@@ -503,87 +519,91 @@ elif pagina == "📊 Análise DRE":
 
 elif pagina == "🕵️ Conciliação Notas vs Balancete":
     st.title("🕵️ Conciliação: Notas Fiscais vs Balancete")
-    st.markdown("Verifique se as despesas da planilha de notas constam no balancete.")
+    st.markdown("Selecione o Mês nas Planilhas de Notas (Esquerda) e cruze com o Balancete (Direita).")
 
     col1, col2 = st.columns(2)
 
+    # Dicionário para armazenar opções de mês (seja de arquivos separados ou abas)
+    opcoes_meses = {}
+
     with col1:
-        st.subheader("1. Planilha de Notas")
-        # Aceita múltiplos CSVs (caso o Excel tenha se separado) OU um único Excel
+        st.subheader("1. Planilha de Notas (Esquerda)")
+        # Aceita múltiplos arquivos (para os CSVs) OU um único Excel
         notas_files = st.file_uploader(
-            "Upload de Planilhas (Pode ser 1 Excel com abas ou vários CSVs)", 
-            type=['xlsx', 'csv'], 
+            "Upload Planilhas de Notas (Vários CSVs ou 1 Excel)", 
+            type=['csv', 'xlsx'], 
             accept_multiple_files=True, 
             key="conc_notas"
         )
+        
+        # Processamento inteligente dos inputs de notas
+        if notas_files:
+            # Caso 1: Múltiplos arquivos carregados (ex: 01.2025.csv, 02.2025.csv...)
+            if len(notas_files) > 1:
+                for f in notas_files:
+                    opcoes_meses[f.name] = {'tipo': 'arquivo', 'dados': f}
+            
+            # Caso 2: Um único arquivo carregado
+            elif len(notas_files) == 1:
+                arquivo_unico = notas_files[0]
+                # Se for Excel, tenta ler as abas
+                if arquivo_unico.name.endswith('.xlsx'):
+                    try:
+                        xls = pd.ExcelFile(arquivo_unico)
+                        for aba in xls.sheet_names:
+                            opcoes_meses[aba] = {'tipo': 'aba_excel', 'dados': arquivo_unico, 'nome_aba': aba}
+                    except:
+                        # Se falhar ao ler como Excel, trata como arquivo único normal
+                        opcoes_meses[arquivo_unico.name] = {'tipo': 'arquivo', 'dados': arquivo_unico}
+                else:
+                    # Se for CSV único
+                    opcoes_meses[arquivo_unico.name] = {'tipo': 'arquivo', 'dados': arquivo_unico}
 
     with col2:
-        st.subheader("2. Balancete")
-        # Aceita CSV ou XLSX
+        st.subheader("2. Balancete (Direita)")
         balancete_file = st.file_uploader("Upload Balancete (CSV ou XLSX)", type=['csv', 'xlsx'], key="conc_bal")
 
-    # Lógica para organizar os arquivos de Notas
-    # O objetivo é criar um dicionário: { "10.2025": {tipo: 'csv', obj: file}, "01.2025": ... }
-    mapa_arquivos_notas = {}
-
-    if notas_files:
-        for f in notas_files:
-            if f.name.endswith('.xlsx'):
-                # Caso seja um Excel com várias abas
-                try:
-                    xls = pd.ExcelFile(f)
-                    for sheet_name in xls.sheet_names:
-                        # Usa o nome da aba como chave
-                        mapa_arquivos_notas[f"Aba: {sheet_name}"] = {
-                            'tipo': 'excel_sheet', 
-                            'file': f, 
-                            'sheet': sheet_name
-                        }
-                except:
-                    st.error(f"Erro ao ler abas do arquivo {f.name}")
-            else:
-                # Caso sejam CSVs separados (ex: 'Planilha... - 10.2025.csv')
-                # Tenta extrair a data do nome
-                match = re.search(r'(\d{2}\.\d{4})', f.name)
-                if match:
-                    mes_ano = match.group(1)
-                    mapa_arquivos_notas[f"Mês: {mes_ano}"] = {'tipo': 'csv', 'file': f}
-                else:
-                    mapa_arquivos_notas[f"Arquivo: {f.name}"] = {'tipo': 'csv', 'file': f}
-
-    if mapa_arquivos_notas and balancete_file:
+    # Área de Ação
+    if opcoes_meses and balancete_file:
         st.divider()
-        st.markdown("### Selecione o Período")
+        st.markdown("### Seleção do Período")
         
-        # Dropdown com as opções encontradas
-        opcoes_meses = sorted(list(mapa_arquivos_notas.keys()))
-        selecao = st.selectbox("Escolha a planilha de notas para analisar:", opcoes_meses)
+        # Dropdown para escolher qual "mês" processar
+        chaves_ordenadas = sorted(list(opcoes_meses.keys()))
+        mes_escolhido = st.selectbox("Escolha o Mês/Arquivo de Notas para analisar:", chaves_ordenadas)
         
         if st.button("Iniciar Conciliação"):
-            dados_selecao = mapa_arquivos_notas[selecao]
+            selecao = opcoes_meses[mes_escolhido]
             
-            with st.spinner('Processando e comparando...'):
+            with st.spinner('Processando dados...'):
                 
-                # 1. Carregar Balancete (Coluna Q = índice 16)
-                df_balancete = carregar_balancete(balancete_file, col_valor_idx=16, col_nome_idx=2)
+                # 1. Carregar Balancete (Coluna Q = índice 16, Nome = índice 2)
+                # Usamos a função robusta para evitar erro de leitura de coluna
+                df_balancete = carregar_balancete_robusto(balancete_file, col_valor_idx=16, col_nome_idx=2)
                 
                 # 2. Carregar Notas
-                df_notas = pd.DataFrame()
-                
-                if dados_selecao['tipo'] == 'csv':
-                    df_notas = carregar_notas_generico(dados_selecao['file'], col_valor_idx=1, col_nome_idx=0, is_dataframe=False)
-                elif dados_selecao['tipo'] == 'excel_sheet':
-                    # Lê a aba específica
-                    df_aba = pd.read_excel(dados_selecao['file'], sheet_name=dados_selecao['sheet'], header=None)
-                    df_notas = carregar_notas_generico(df_aba, col_valor_idx=1, col_nome_idx=0, is_dataframe=True)
-                
-                # Verificações
-                if df_balancete.empty:
-                    st.error("Erro: Não foi possível ler dados do Balancete (Verifique se há dados na Coluna Q/17).")
-                elif df_notas.empty:
-                    st.error("Erro: Não foi possível ler dados das Notas (Verifique se há dados na Coluna B).")
+                if selecao['tipo'] == 'aba_excel':
+                    df_notas = carregar_notas_generico(
+                        selecao['dados'], 
+                        is_excel_tab=True, 
+                        sheet_name=selecao['nome_aba'], 
+                        col_valor_idx=1, col_nome_idx=0
+                    )
                 else:
-                    # Processamento
+                    # É um arquivo (CSV ou Excel único)
+                    df_notas = carregar_notas_generico(
+                        selecao['dados'], 
+                        is_excel_tab=False, 
+                        col_valor_idx=1, col_nome_idx=0
+                    )
+                
+                # Verificações finais antes de cruzar
+                if df_balancete.empty:
+                    st.error("O Balancete parece vazio ou a Coluna Q não foi encontrada. Verifique se o arquivo tem pelo menos 17 colunas.")
+                elif df_notas.empty:
+                    st.error("A Planilha de Notas não retornou dados válidos na Coluna B.")
+                else:
+                    # Cruzamento
                     resultados = []
                     progresso = st.progress(0)
                     total_notas = len(df_notas)
@@ -631,5 +651,7 @@ elif pagina == "🕵️ Conciliação Notas vs Balancete":
                         }).map(lambda v: 'color: red;' if 'Divergente' in str(v) else ('color: green;' if 'Conferido' in str(v) else ''), subset=['STATUS'])
                     )
 
-    elif not notas_files or not balancete_file:
-        st.info("Aguardando upload dos arquivos.")
+    elif not notas_files:
+        st.info("Por favor, faça o upload das Planilhas de Notas (Esquerda).")
+    elif not balancete_file:
+        st.info("Por favor, faça o upload do Balancete (Direita).")
