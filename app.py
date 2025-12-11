@@ -2,8 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import re
-import io
-from fuzzywuzzy import fuzz # Biblioteca necessária para comparação de nomes
+from fuzzywuzzy import fuzz
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Gestão Integrada (RH & Financeiro)", layout="wide")
@@ -41,10 +40,8 @@ def formatar_visual(td):
 
 def processar_ponto(uploaded_file):
     try:
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file, header=None)
-        else:
-            df = pd.read_excel(uploaded_file, header=None)
+        # Lê Excel diretamente
+        df = pd.read_excel(uploaded_file, header=None)
     except Exception as e:
         st.error(f"Erro ao ler o arquivo: {e}")
         return None, None, 0
@@ -126,10 +123,15 @@ def processar_ponto(uploaded_file):
 # ==============================================================================
 
 def limpar_valor_financeiro(valor):
-    """Converte strings financeiras (ex: '1.000,00C') para float."""
+    """Converte strings financeiras ou floats do Excel para float puro."""
     if pd.isna(valor) or str(valor).strip() == '':
         return 0.0
+    
+    if isinstance(valor, (int, float)):
+        return float(valor)
+
     s = str(valor).strip().upper().replace('C', '').replace('D', '')
+    s = s.replace('R$', '').strip()
     s = s.replace('.', '').replace(',', '.')
     try:
         return float(s)
@@ -149,11 +151,15 @@ def buscar_por_classificacao(df, codigo):
 # ==============================================================================
 
 def limpar_valor_conciliacao(valor):
-    """Converte string financeira brasileira (ex: 1.000,00D) para float."""
+    """Converte valor (Excel float ou String BR) para float."""
     if pd.isna(valor) or valor == '':
         return None
     
-    # Converte para string
+    # Se o Excel já leu como número, retorna direto
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    
+    # Converte para string se for texto
     v_str = str(valor).strip().upper()
     
     # Remove letras comuns em balancetes (D = Débito, C = Crédito)
@@ -164,6 +170,7 @@ def limpar_valor_conciliacao(valor):
     
     # Lida com formatação BR (remove ponto de milhar, troca vírgula por ponto)
     try:
+        # Ex: "1.200,50" -> Tira ponto, troca virgula
         if ',' in v_str and '.' in v_str:
             v_str = v_str.replace('.', '').replace(',', '.')
         elif ',' in v_str:
@@ -173,15 +180,18 @@ def limpar_valor_conciliacao(valor):
     except ValueError:
         return None
 
-def carregar_balancete(file, col_valor_idx=16, col_nome_idx=2):
+def carregar_balancete_xlsx(file, col_valor_idx=16, col_nome_idx=2):
     try:
-        df = pd.read_csv(file, header=None, dtype=str)
+        # Lê o Excel sem cabeçalho para pegar pelo índice da coluna (A=0, B=1...)
+        df = pd.read_excel(file, header=None)
         processed_data = []
         
         for index, row in df.iterrows():
             if len(row) > col_valor_idx:
                 raw_val = row[col_valor_idx]
+                # Pega o nome (Coluna C normalmente)
                 nome = row[col_nome_idx] if len(row) > col_nome_idx else "Sem Descrição"
+                
                 val_float = limpar_valor_conciliacao(raw_val)
                 
                 if val_float is not None and val_float != 0:
@@ -192,22 +202,26 @@ def carregar_balancete(file, col_valor_idx=16, col_nome_idx=2):
                     })
         return pd.DataFrame(processed_data)
     except Exception as e:
-        st.error(f"Erro ao ler Balancete: {e}")
+        st.error(f"Erro ao ler Balancete (XLSX): {e}")
         return pd.DataFrame()
 
-def carregar_notas(file, col_valor_idx=1, col_nome_idx=0):
+def carregar_notas_xlsx(file, col_valor_idx=1, col_nome_idx=0):
     try:
-        df = pd.read_csv(file, header=None, dtype=str)
+        # Lê o Excel sem cabeçalho
+        df = pd.read_excel(file, header=None)
         processed_data = []
         
         for index, row in df.iterrows():
             if len(row) > col_valor_idx:
-                raw_val = row[col_valor_idx]
-                nome = row[col_nome_idx]
+                raw_val = row[col_valor_idx] # Coluna B (indice 1)
+                nome = row[col_nome_idx]     # Coluna A (indice 0)
+                
                 val_float = limpar_valor_conciliacao(raw_val)
                 
                 if val_float is not None and val_float > 0:
-                    if str(nome).lower() not in ['débito', 'valor', 'total', 'nan']:
+                    # Verifica se não é cabeçalho lendo o nome
+                    nome_str = str(nome).lower() if nome else ""
+                    if nome_str not in ['débito', 'valor', 'total', 'nan', 'histórico', 'descrição']:
                         processed_data.append({
                             'Nota_Linha': index + 1,
                             'Descricao_Nota': nome,
@@ -215,14 +229,14 @@ def carregar_notas(file, col_valor_idx=1, col_nome_idx=0):
                         })
         return pd.DataFrame(processed_data)
     except Exception as e:
-        st.error(f"Erro ao ler Notas: {e}")
+        st.error(f"Erro ao ler Notas (XLSX): {e}")
         return pd.DataFrame()
 
 def encontrar_correspondencia(row_nota, df_balancete):
     valor_procurado = row_nota['Valor_Nota']
     desc_nota = str(row_nota['Descricao_Nota'])
     
-    # Filtra por valor exato (com pequena margem)
+    # Filtra por valor exato (com margem de erro float)
     matches = df_balancete[
         (df_balancete['Valor_Balancete'] > valor_procurado - 0.01) & 
         (df_balancete['Valor_Balancete'] < valor_procurado + 0.01)
@@ -275,9 +289,9 @@ st.sidebar.divider()
 
 if pagina == "📂 Análise de Ponto":
     st.title("📂 Análise de Atrasos (Ponto)")
-    st.markdown("Faça o upload do arquivo para verificar atrasos na entrada e no almoço.")
+    st.markdown("Faça o upload do arquivo XLSX para verificar atrasos.")
 
-    arquivo = st.file_uploader("Carregue o arquivo de Ponto (XLSX ou CSV)", type=['csv', 'xlsx'])
+    arquivo = st.file_uploader("Carregue o arquivo de Ponto (XLSX)", type=['xlsx'])
 
     if arquivo:
         with st.spinner('Analisando dados...'):
@@ -285,7 +299,6 @@ if pagina == "📂 Análise de Ponto":
         
         if nome:
             st.success(f"Funcionário: **{nome}**")
-            
             st.session_state['ultimo_total_atrasos'] = total_ocorrencias
             
             col1, col2 = st.columns(2)
@@ -302,10 +315,7 @@ if pagina == "📂 Análise de Ponto":
                 st.dataframe(
                     df_resultado, 
                     use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Qtd": st.column_config.NumberColumn("Qtd", format="%d", width="small")
-                    }
+                    hide_index=True
                 )
             else:
                 st.balloons()
@@ -317,168 +327,86 @@ if pagina == "📂 Análise de Ponto":
 
 elif pagina == "💰 Calc. Vale Alimentação":
     st.title("💰 Calculadora de Vale Alimentação")
-    st.markdown("Calcule o valor final do benefício baseado no cargo e penalidades por atraso.")
-
+    
     tabela_cargos = {
         "Junior": 252.07, "Premium": 348.45, "Senior": 444.84, "Master": 548.64
     }
 
     col_input1, col_input2 = st.columns(2)
-
     with col_input1:
         cargo_selecionado = st.selectbox("Selecione o Cargo", list(tabela_cargos.keys()))
     
     valor_inicial_atrasos = st.session_state.get('ultimo_total_atrasos', 0)
 
     with col_input2:
-        qtd_atrasos = st.number_input(
-            "Quantidade Total de Atrasos", 
-            min_value=0, 
-            value=valor_inicial_atrasos,
-            step=1
-        )
+        qtd_atrasos = st.number_input("Qtd Atrasos", min_value=0, value=valor_inicial_atrasos, step=1)
 
     st.divider()
 
     valor_base_mensal = tabela_cargos[cargo_selecionado]
     valor_diario = valor_base_mensal / 30 
-    
     valor_final = 0.0
-    mensagem_penalidade = ""
-    cor_alerta = "green"
-
+    
     if qtd_atrasos < 3:
         valor_final = valor_base_mensal
-        mensagem_penalidade = "✅ Nenhuma penalidade aplicada (Menos de 3 atrasos)."
-        cor_alerta = "success"
+        st.success("✅ Sem penalidade (Menos de 3 atrasos).")
     elif qtd_atrasos == 3:
         desconto = 2 * valor_diario
         valor_final = valor_base_mensal - desconto
-        mensagem_penalidade = f"⚠️ Penalidade: Desconto de 2 dias (R$ {desconto:.2f})."
-        cor_alerta = "warning"
+        st.warning(f"⚠️ Penalidade: Desconto de 2 dias (R$ {desconto:.2f}).")
     elif 4 <= qtd_atrasos <= 7:
         desconto = 7 * valor_diario
         valor_final = valor_base_mensal - desconto
-        mensagem_penalidade = f"⛔ Penalidade: Desconto de 7 dias (R$ {desconto:.2f})."
-        cor_alerta = "error"
+        st.error(f"⛔ Penalidade: Desconto de 7 dias (R$ {desconto:.2f}).")
     else:
         valor_final = 148.27
-        mensagem_penalidade = "🚨 Penalidade Máxima: Redução para valor fixo de cesta básica."
-        cor_alerta = "error"
+        st.error("🚨 Penalidade Máxima: Cesta Básica Fixa.")
 
-    st.subheader("Resultado do Cálculo")
-    col_res1, col_res2, col_res3 = st.columns(3)
-
-    with col_res1: st.metric("Valor Base (30 dias)", f"R$ {valor_base_mensal:.2f}")
-    with col_res2:
-        diferenca = valor_final - valor_base_mensal
-        st.metric("Desconto / Ajuste", f"R$ {diferenca:.2f}", delta=f"{diferenca:.2f}")
-    with col_res3: st.metric("Valor a Receber", f"R$ {valor_final:.2f}")
-
-    if cor_alerta == "success": st.success(mensagem_penalidade)
-    elif cor_alerta == "warning": st.warning(mensagem_penalidade)
-    else: st.error(mensagem_penalidade)
+    col1, col2 = st.columns(2)
+    col1.metric("Valor Base", f"R$ {valor_base_mensal:.2f}")
+    col2.metric("A Receber", f"R$ {valor_final:.2f}")
 
 # ==============================================================================
 # PÁGINA 3: ANÁLISE DRE
 # ==============================================================================
 
 elif pagina == "📊 Análise DRE":
-    
-    # --- Inputs Laterais Específicos do DRE ---
-    st.sidebar.markdown("### Dados Mês Anterior (DRE)")
-    rol_anterior = st.sidebar.number_input(
-        "ROL Mês Anterior (R$)", min_value=0.0, value=647538.80, step=1000.0, format="%.2f"
-    )
-    lucro_anterior = st.sidebar.number_input(
-        "Lucro Líq. Mês Anterior (R$)", min_value=0.0, value=228305.24, step=1000.0, format="%.2f"
-    )
+    st.sidebar.markdown("### Dados Mês Anterior")
+    rol_anterior = st.sidebar.number_input("ROL Anterior (R$)", value=647538.80)
+    lucro_anterior = st.sidebar.number_input("Lucro Líq. Anterior (R$)", value=228305.24)
     
     st.title("📊 Automação de Análise DRE")
-    st.markdown("Extração automática de indicadores financeiros via Classificação Contábil.")
-
-    uploaded_file_dre = st.file_uploader("Faça upload do arquivo DRE (CSV ou Excel)", type=['csv', 'xlsx'], key="dre_uploader")
+    uploaded_file_dre = st.file_uploader("Upload DRE (XLSX)", type=['xlsx'])
 
     if uploaded_file_dre is not None:
         try:
-            if uploaded_file_dre.name.endswith('.csv'):
-                df_raw = pd.read_csv(uploaded_file_dre, header=None)
-            else:
-                df_raw = pd.read_excel(uploaded_file_dre, header=None)
-
-            # Encontrar cabeçalho
+            df_raw = pd.read_excel(uploaded_file_dre, header=None)
+            
+            # Tenta achar a linha de cabeçalho
             idx_header = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains('Classificação').any(), axis=1)].index[0]
             df_raw.columns = df_raw.iloc[idx_header]
             df = df_raw[idx_header+1:].reset_index(drop=True)
             df.columns = df.columns.str.strip()
             
-            # Extração
             receita_bruta = buscar_por_classificacao(df, '03.1.1')
             deducoes = buscar_por_classificacao(df, '03.1.2')
             custos_servicos = buscar_por_classificacao(df, '04.1')
             lucro_liquido_atual = buscar_por_classificacao(df, '05.1.1.01.001')
-            ebitda_valor = buscar_por_classificacao(df, '04.2.9')
-            despesas_operacionais = buscar_por_classificacao(df, '04.2')
-
-            # Cálculos
+            
             rol_atual = receita_bruta - deducoes
             
-            if rol_atual and rol_atual != 0:
-                margem_bruta = (rol_atual - custos_servicos) / rol_atual
+            if rol_atual:
                 margem_liquida = lucro_liquido_atual / rol_atual
-                margem_ebitda = ebitda_valor / rol_atual
-                eficiencia_operacional = despesas_operacionais / rol_atual
             else:
-                margem_bruta = 0
                 margem_liquida = 0
-                margem_ebitda = 0
-                eficiencia_operacional = 0
-
-            # Crescimento
-            if rol_anterior and rol_anterior != 0:
-                crescimento_rol = (rol_atual - rol_anterior) / rol_anterior
-            else:
-                crescimento_rol = 0
-                
-            if lucro_anterior and lucro_anterior != 0:
-                crescimento_lucro = (lucro_liquido_atual - lucro_anterior) / lucro_anterior
-            else:
-                crescimento_lucro = 0
-
-            # --- Exibição dos Resultados ---
-            st.divider()
-            st.subheader("Resultados Consolidados")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("ROL Atual", f"R$ {rol_atual:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
-                st.metric("Lucro Líquido", f"R$ {lucro_liquido_atual:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
-                
-            with col2:
-                st.metric("Margem Bruta", f"{margem_bruta:.2%}")
-                st.metric("Margem Líquida", f"{margem_liquida:.2%}")
-
-            with col3:
-                st.metric("Margem EBITDA", f"{margem_ebitda:.2%}")
-                st.metric("Efic. Operacional", f"{eficiencia_operacional:.2%}")
-
-            with col4:
-                st.metric("Cresc. ROL", f"{crescimento_rol:.2%}", delta_color="normal")
-                st.metric("Cresc. Lucro", f"{crescimento_lucro:.2%}", delta_color="normal")
 
             st.divider()
-            
-            with st.expander("Verificar valores extraídos"):
-                st.write(f"**Receita Bruta (03.1.1):** {receita_bruta}")
-                st.write(f"**Deduções (03.1.2):** {deducoes}")
-                st.write(f"**Custos (04.1):** {custos_servicos}")
-                st.write(f"**EBITDA Base (04.2.9):** {ebitda_valor}")
-                st.write(f"**Despesas Operacionais (04.2):** {despesas_operacionais}")
+            c1, c2 = st.columns(2)
+            c1.metric("ROL Atual", f"R$ {rol_atual:,.2f}")
+            c2.metric("Margem Líquida", f"{margem_liquida:.2%}")
 
         except Exception as e:
-            st.error(f"Erro ao processar o arquivo: {e}")
-            st.info("Verifique se o arquivo tem as colunas 'Classificação' e 'Movimento'.")
+            st.error(f"Erro: {e}")
 
 # ==============================================================================
 # PÁGINA 4: CONCILIAÇÃO DE NOTAS
@@ -487,22 +415,24 @@ elif pagina == "📊 Análise DRE":
 elif pagina == "🕵️ Conciliação Notas vs Balancete":
     st.title("🕵️ Conciliação: Notas Fiscais vs Balancete")
     st.markdown("Verifique se as despesas da planilha de notas constam no balancete.")
+    st.info("O sistema aceita arquivos **.xlsx**. Certifique-se que o Balancete tenha valores na **Coluna Q** e as Notas na **Coluna B**.")
 
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("1. Balancete")
-        balancete_file = st.file_uploader("Upload Balancete (CSV)", type=['csv'], key="conc_bal")
+        balancete_file = st.file_uploader("Upload Balancete (.xlsx)", type=['xlsx'], key="conc_bal")
 
     with col2:
         st.subheader("2. Planilhas de Notas")
-        notas_files = st.file_uploader("Upload Notas (CSVs)", type=['csv'], accept_multiple_files=True, key="conc_notas")
+        notas_files = st.file_uploader("Upload Notas (.xlsx)", type=['xlsx'], accept_multiple_files=True, key="conc_notas")
 
     # Dicionário para organizar arquivos por mês
     arquivos_por_mes = {}
 
     if notas_files:
         for f in notas_files:
+            # Tenta pegar mes.ano do nome do arquivo
             match = re.search(r'(\d{2}\.\d{4})', f.name)
             if match:
                 mes_ano = match.group(1)
@@ -519,12 +449,15 @@ elif pagina == "🕵️ Conciliação Notas vs Balancete":
         if st.button("Iniciar Análise de Conciliação"):
             file_nota = arquivos_por_mes[mes_selecionado]
             
-            with st.spinner('Cruzando informações...'):
-                df_balancete = carregar_balancete(balancete_file, col_valor_idx=16, col_nome_idx=2)
-                df_notas = carregar_notas(file_nota, col_valor_idx=1, col_nome_idx=0)
+            with st.spinner('Cruzando informações (Lendo Excel)...'):
+                # Balancete: Col Q = índice 16, Col C (Nome) = índice 2
+                df_balancete = carregar_balancete_xlsx(balancete_file, col_valor_idx=16, col_nome_idx=2)
+                
+                # Notas: Col B = índice 1, Col A (Nome) = índice 0
+                df_notas = carregar_notas_xlsx(file_nota, col_valor_idx=1, col_nome_idx=0)
                 
                 if df_balancete.empty or df_notas.empty:
-                    st.error("Não foi possível processar os arquivos. Verifique se são CSVs válidos e possuem os dados nas colunas corretas (Balancete: Col Q, Notas: Col B).")
+                    st.error("Erro ao processar. Verifique se as colunas B (Notas) e Q (Balancete) possuem dados.")
                 else:
                     resultados = []
                     
@@ -575,4 +508,4 @@ elif pagina == "🕵️ Conciliação Notas vs Balancete":
                     )
 
     elif not balancete_file and not arquivos_por_mes:
-        st.info("Aguardando upload dos arquivos.")
+        st.info("Aguardando upload dos arquivos XLSX.")
