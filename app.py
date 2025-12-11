@@ -2,12 +2,13 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import re
+import io
 
 # --- Configuração da Página ---
-st.set_page_config(page_title="Gestão de Ponto e Benefícios", layout="wide")
+st.set_page_config(page_title="Gestão Integrada (RH & Financeiro)", layout="wide")
 
 # ==============================================================================
-# FUNÇÕES AUXILIARES (Página de Análise)
+# FUNÇÕES AUXILIARES - GERAIS E PONTO
 # ==============================================================================
 
 def limpar_celula_tempo(valor_celula):
@@ -52,13 +53,11 @@ def processar_ponto(uploaded_file):
     except:
         nome_funcionario = "Nome não encontrado"
 
-    # Mapeamento de linhas para horários padrão
     linhas_horario = {
         'Seg': 10, 'Ter': 12, 'Qua': 14, 'Qui': 17, 'Sex': 19, 'Sáb': 22, 'Dom': None
     }
     
     agendamento = {}
-
     for dia_chave, indice_linha in linhas_horario.items():
         if indice_linha is None:
             agendamento[dia_chave] = None
@@ -69,9 +68,7 @@ def processar_ponto(uploaded_file):
         ent2 = limpar_celula_tempo(df.iloc[indice_linha, 28])
         
         agendamento[dia_chave] = {
-            'std_ent1': ent1,
-            'std_sai1': sai1,
-            'std_ent2': ent2
+            'std_ent1': ent1, 'std_sai1': sai1, 'std_ent2': ent2
         }
 
     linhas_dados = df.iloc[31:].copy()
@@ -100,14 +97,11 @@ def processar_ponto(uploaded_file):
         real_ent2 = limpar_celula_tempo(row[8]) 
         
         motivos = []
-
-        # Regra 1: Chegada
         if padrao['std_ent1'] and real_ent1:
             limite = padrao['std_ent1'] + tolerancia
             if real_ent1 > limite:
                 motivos.append(f"Manhã ({formatar_visual(real_ent1)})")
 
-        # Regra 2: Volta Almoço
         if padrao['std_ent2'] and padrao['std_sai1'] and real_sai1 and real_ent2:
             duracao = padrao['std_ent2'] - padrao['std_sai1']
             limite = real_sai1 + duracao + tolerancia
@@ -127,14 +121,36 @@ def processar_ponto(uploaded_file):
     return nome_funcionario, pd.DataFrame(dias_com_atraso), total_ocorrencias_geral
 
 # ==============================================================================
+# FUNÇÕES AUXILIARES - FINANCEIRO (DRE)
+# ==============================================================================
+
+def limpar_valor_financeiro(valor):
+    """Converte strings financeiras (ex: '1.000,00C') para float."""
+    if pd.isna(valor) or str(valor).strip() == '':
+        return 0.0
+    s = str(valor).strip().upper().replace('C', '').replace('D', '')
+    s = s.replace('.', '').replace(',', '.')
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+def buscar_por_classificacao(df, codigo):
+    """Busca valor na coluna Movimento baseado na Classificação."""
+    linha = df[df['Classificação'] == codigo]
+    if not linha.empty:
+        valor_bruto = linha['Movimento'].values[0]
+        return limpar_valor_financeiro(valor_bruto)
+    return 0.0
+
+# ==============================================================================
 # MENU LATERAL
 # ==============================================================================
 
 st.sidebar.title("Navegação")
-pagina = st.sidebar.radio("Ir para:", ["📂 Análise de Ponto", "💰 Calc. Vale Alimentação"])
+pagina = st.sidebar.radio("Ir para:", ["📂 Análise de Ponto", "💰 Calc. Vale Alimentação", "📊 Análise DRE"])
 
 st.sidebar.markdown("---")
-st.sidebar.info("Sistema de Gestão de RH")
 
 # ==============================================================================
 # PÁGINA 1: ANÁLISE DE PONTO
@@ -144,7 +160,7 @@ if pagina == "📂 Análise de Ponto":
     st.title("📂 Análise de Atrasos (Ponto)")
     st.markdown("Faça o upload do arquivo para verificar atrasos na entrada e no almoço.")
 
-    arquivo = st.file_uploader("Carregue o arquivo (XLSX ou CSV)", type=['csv', 'xlsx'])
+    arquivo = st.file_uploader("Carregue o arquivo de Ponto (XLSX ou CSV)", type=['csv', 'xlsx'])
 
     if arquivo:
         with st.spinner('Analisando dados...'):
@@ -153,7 +169,6 @@ if pagina == "📂 Análise de Ponto":
         if nome:
             st.success(f"Funcionário: **{nome}**")
             
-            # Guardar o total na sessão para usar na outra página
             st.session_state['ultimo_total_atrasos'] = total_ocorrencias
             
             col1, col2 = st.columns(2)
@@ -187,99 +202,102 @@ elif pagina == "💰 Calc. Vale Alimentação":
     st.title("💰 Calculadora de Vale Alimentação")
     st.markdown("Calcule o valor final do benefício baseado no cargo e penalidades por atraso.")
 
-    # 1. Definição de Valores
     tabela_cargos = {
-        "Junior": 252.07,
-        "Premium": 348.45,
-        "Senior": 444.84,
-        "Master": 548.64
+        "Junior": 252.07, "Premium": 348.45, "Senior": 444.84, "Master": 548.64
     }
 
-    # 2. Layout de Inputs
     col_input1, col_input2 = st.columns(2)
 
     with col_input1:
-        cargo_selecionado = st.selectbox(
-            "Selecione o Cargo", 
-            list(tabela_cargos.keys())
-        )
+        cargo_selecionado = st.selectbox("Selecione o Cargo", list(tabela_cargos.keys()))
     
-    # Tenta pegar o valor da outra página se existir, senão 0
     valor_inicial_atrasos = st.session_state.get('ultimo_total_atrasos', 0)
 
     with col_input2:
         qtd_atrasos = st.number_input(
             "Quantidade Total de Atrasos", 
             min_value=0, 
-            value=valor_inicial_atrasos, # Sugere o valor achado na análise
-            step=1,
-            help="Insira o número total de ocorrências no mês."
+            value=valor_inicial_atrasos,
+            step=1
         )
 
     st.divider()
 
-    # 3. Lógica de Cálculo
     valor_base_mensal = tabela_cargos[cargo_selecionado]
-    valor_diario = valor_base_mensal / 30  # Base 30 dias
+    valor_diario = valor_base_mensal / 30 
     
     valor_final = 0.0
     mensagem_penalidade = ""
-    cor_alerta = "green" # green, orange, red
+    cor_alerta = "green"
 
-    # Regras de Penalidade
     if qtd_atrasos < 3:
-        # 0 a 2 atrasos: Recebe integral
         valor_final = valor_base_mensal
         mensagem_penalidade = "✅ Nenhuma penalidade aplicada (Menos de 3 atrasos)."
         cor_alerta = "success"
-
     elif qtd_atrasos == 3:
-        # 3 atrasos: Perde 2 dias
         desconto = 2 * valor_diario
         valor_final = valor_base_mensal - desconto
         mensagem_penalidade = f"⚠️ Penalidade: Desconto de 2 dias (R$ {desconto:.2f})."
         cor_alerta = "warning"
-
     elif 4 <= qtd_atrasos <= 7:
-        # 4 a 7 atrasos: Perde 7 dias
         desconto = 7 * valor_diario
         valor_final = valor_base_mensal - desconto
         mensagem_penalidade = f"⛔ Penalidade: Desconto de 7 dias (R$ {desconto:.2f})."
         cor_alerta = "error"
-
     else:
-        # 8 ou mais atrasos: Valor fixo da cesta
         valor_final = 148.27
         mensagem_penalidade = "🚨 Penalidade Máxima: Redução para valor fixo de cesta básica."
         cor_alerta = "error"
 
-    # 4. Exibição dos Resultados
     st.subheader("Resultado do Cálculo")
-
     col_res1, col_res2, col_res3 = st.columns(3)
 
-    with col_res1:
-        st.metric("Valor Base (30 dias)", f"R$ {valor_base_mensal:.2f}")
-
+    with col_res1: st.metric("Valor Base (30 dias)", f"R$ {valor_base_mensal:.2f}")
     with col_res2:
-        # Mostra a diferença como negativo em vermelho
         diferenca = valor_final - valor_base_mensal
         st.metric("Desconto / Ajuste", f"R$ {diferenca:.2f}", delta=f"{diferenca:.2f}")
+    with col_res3: st.metric("Valor a Receber", f"R$ {valor_final:.2f}")
 
-    with col_res3:
-        st.metric("Valor a Receber", f"R$ {valor_final:.2f}")
+    if cor_alerta == "success": st.success(mensagem_penalidade)
+    elif cor_alerta == "warning": st.warning(mensagem_penalidade)
+    else: st.error(mensagem_penalidade)
 
-    # Caixa de mensagem explicativa
-    if cor_alerta == "success":
-        st.success(mensagem_penalidade)
-    elif cor_alerta == "warning":
-        st.warning(mensagem_penalidade)
-    else:
-        st.error(mensagem_penalidade)
+# ==============================================================================
+# PÁGINA 3: ANÁLISE DRE
+# ==============================================================================
 
-    # Detalhe do cálculo matemático
-    with st.expander("Ver detalhes do cálculo"):
-        st.write(f"**Cargo:** {cargo_selecionado}")
-        st.write(f"**Valor Diário (Base/30):** R$ {valor_diario:.4f}")
-        st.write(f"**Ocorrências:** {qtd_atrasos}")
-        st.write(f"**Regra Aplicada:** {mensagem_penalidade}")
+elif pagina == "📊 Análise DRE":
+    
+    # --- Inputs Laterais Específicos do DRE ---
+    st.sidebar.markdown("### Dados Mês Anterior (DRE)")
+    rol_anterior = st.sidebar.number_input(
+        "ROL Mês Anterior (R$)", min_value=0.0, value=647538.80, step=1000.0, format="%.2f"
+    )
+    lucro_anterior = st.sidebar.number_input(
+        "Lucro Líq. Mês Anterior (R$)", min_value=0.0, value=228305.24, step=1000.0, format="%.2f"
+    )
+    
+    st.title("📊 Automação de Análise DRE")
+    st.markdown("Extração automática de indicadores financeiros via Classificação Contábil.")
+
+    uploaded_file_dre = st.file_uploader("Faça upload do arquivo DRE (CSV ou Excel)", type=['csv', 'xlsx'], key="dre_uploader")
+
+    if uploaded_file_dre is not None:
+        try:
+            if uploaded_file_dre.name.endswith('.csv'):
+                df_raw = pd.read_csv(uploaded_file_dre, header=None)
+            else:
+                df_raw = pd.read_excel(uploaded_file_dre, header=None)
+
+            # Encontrar cabeçalho
+            idx_header = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains('Classificação').any(), axis=1)].index[0]
+            df_raw.columns = df_raw.iloc[idx_header]
+            df = df_raw[idx_header+1:].reset_index(drop=True)
+            df.columns = df.columns.str.strip()
+            
+            # Extração
+            receita_bruta = buscar_por_classificacao(df, '03.1.1')
+            deducoes = buscar_por_classificacao(df, '03.1.2')
+            custos_servicos = buscar_por_classificacao(df, '04.1')
+            lucro_liquido_atual = buscar_por_classificacao(df, '05.1.1.01.001')
+            ebitda_valor = buscar_por_classificacao(df, '0
