@@ -271,10 +271,10 @@ elif pagina == "📊 Análise DRE":
     # --- Inputs Laterais Específicos do DRE ---
     st.sidebar.markdown("### Dados Mês Anterior (DRE)")
     rol_anterior = st.sidebar.number_input(
-        "ROL Mês Anterior (R$)", min_value=0.0, value=647538.80, step=1000.0, format="%.2f"
+        "ROL Mês Anterior (R$)", min_value=0.0, value=1.11, step=1000.0, format="%.2f"
     )
     lucro_anterior = st.sidebar.number_input(
-        "Lucro Líq. Mês Anterior (R$)", min_value=0.0, value=228305.24, step=1000.0, format="%.2f"
+        "Lucro Líq. Mês Anterior (R$)", min_value=0.0, value=1.11, step=1000.0, format="%.2f"
     )
     
     st.title("📊 Automação de Análise DRE")
@@ -363,3 +363,4 @@ elif pagina == "📊 Análise DRE":
         except Exception as e:
             st.error(f"Erro ao processar o arquivo: {e}")
             st.info("Verifique se o arquivo tem as colunas 'Classificação' e 'Movimento'.")
+
