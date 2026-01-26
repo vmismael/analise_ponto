@@ -15,34 +15,20 @@ def check_password():
     """Retorna True se o usuário tiver a senha correta."""
     
     def password_entered():
-        """Checa se a senha inserida está correta."""
         if st.session_state["password"] == "1406":
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Remove a senha da memória por segurança
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # Primeira vez acessando a área restrita
-        st.text_input(
-            "🔒 Área Restrita. Digite a senha:", 
-            type="password", 
-            on_change=password_entered, 
-            key="password"
-        )
+        st.text_input("🔒 Área Restrita. Digite a senha:", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
-        # Senha incorreta
-        st.text_input(
-            "🔒 Área Restrita. Digite a senha:", 
-            type="password", 
-            on_change=password_entered, 
-            key="password"
-        )
+        st.text_input("🔒 Área Restrita. Digite a senha:", type="password", on_change=password_entered, key="password")
         st.error("😕 Senha incorreta.")
         return False
     else:
-        # Senha correta
         return True
 
 # ==============================================================================
@@ -52,6 +38,7 @@ def check_password():
 def limpar_celula_tempo(valor_celula):
     if pd.isna(valor_celula): return None
     s = str(valor_celula).strip()
+    # Remove caracteres inválidos, mantém dígitos e :
     s = re.sub(r'[^\d:]', '', s) 
     if not s: return None
     try:
@@ -72,6 +59,7 @@ def formatar_visual(td):
     return f"{horas:02d}:{minutos:02d}"
 
 def processar_ponto(uploaded_file):
+    # 1. CARREGAMENTO DO ARQUIVO
     try:
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file, header=None)
@@ -81,62 +69,93 @@ def processar_ponto(uploaded_file):
         st.error(f"Erro ao ler o arquivo: {e}")
         return None, None, 0
 
-    # ==========================================================================
-    # 🛡️ BLOCO DE SEGURANÇA / VALIDAÇÃO DE LAYOUT
-    # ==========================================================================
-    # Verifica se os marcadores 'SEG' e 'ENT.1' estão onde esperamos (Linhas 10 e 9)
-    try:
-        # Célula onde deve estar escrito "SEG" (Linha 11 do Excel = Índice 10, Coluna 25 = Índice 24)
-        check_seg = str(df.iloc[10, 24]).strip().upper()
-        # Célula onde deve estar escrito "ENT.1" (Linha 10 do Excel = Índice 9, Coluna 27 = Índice 26)
-        check_ent = str(df.iloc[9, 26]).strip().upper()
+    # 2. LOCALIZAÇÃO DINÂMICA (SCANNER)
+    # Procura onde estão as âncoras "SEG" (para horário padrão) e "ENTRADA 1" (para os dados)
+    
+    markers = {}
+    
+    # A) Procurar "SEG" (Cabeçalho do Horário Padrão) nas primeiras 30 linhas
+    found_seg = False
+    for r_idx, row in df.head(30).iterrows():
+        for c_idx, val in row.items():
+            if str(val).strip().upper() == "SEG":
+                markers['seg_row'] = r_idx
+                markers['seg_col'] = c_idx
+                found_seg = True
+                break
+        if found_seg: break
         
-        # Se não encontrar "SEG" ou "ENT", o arquivo está desalinhado
-        if "SEG" not in check_seg or "ENT" not in check_ent:
-            st.error(
-                f"⚠️ **ERRO CRÍTICO DE LAYOUT**: O arquivo não corresponde ao modelo esperado.\n\n"
-                f"O sistema procurou 'SEG' na linha 11 e 'ENT.1' na linha 10, mas encontrou:\n"
-                f"👉 '{check_seg}' e '{check_ent}'\n\n"
-                f"Provavelmente colunas ou linhas foram adicionadas/removidas no arquivo original."
-            )
-            return None, None, 0
-    except IndexError:
-        st.error("⚠️ **ERRO DE ARQUIVO**: O arquivo é menor do que o esperado (falta linhas ou colunas).")
+    if not found_seg:
+        st.error("⚠️ Estrutura irreconhecível: Não foi possível encontrar a tabela de Horários (SEG/TER...).")
         return None, None, 0
-    except Exception as e:
-        st.error(f"⚠️ Erro desconhecido na validação: {e}")
-        return None, None, 0
-    # ==========================================================================
 
-    # 1. Tenta pegar o nome do funcionário
+    # B) Procurar "ENTRADA 1" (Cabeçalho dos Dados)
+    found_header = False
+    for r_idx, row in df.head(40).iterrows():
+        if r_idx < 15: continue 
+        for c_idx, val in row.items():
+            txt = str(val).strip().upper()
+            if "ENTRADA 1" in txt:
+                markers['header_row'] = r_idx
+                markers['col_ent1_real'] = c_idx
+                
+                # Procura Saída 1 e Entrada 2 na mesma linha
+                for c2_idx in range(c_idx + 1, len(row)):
+                    txt2 = str(row[c2_idx]).strip().upper()
+                    if "SAÍDA 1" in txt2 or "SAIDA 1" in txt2:
+                        markers['col_sai1_real'] = c2_idx
+                    if "ENTRADA 2" in txt2:
+                        markers['col_ent2_real'] = c2_idx
+                found_header = True
+                break
+        if found_header: break
+        
+    if 'col_ent1_real' not in markers or 'col_sai1_real' not in markers or 'col_ent2_real' not in markers:
+        st.error("⚠️ Estrutura irreconhecível: Não foi possível encontrar as colunas de ENTRADA 1, SAÍDA 1 ou ENTRADA 2.")
+        return None, None, 0
+
+    # 3. EXTRAÇÃO DO NOME
     try:
         nome_funcionario = df.iloc[18, 0]
     except:
         nome_funcionario = "Nome não encontrado"
 
-    # 2. Mapeamento das linhas onde estão os HORÁRIOS PADRÃO
-    linhas_horario = {'Seg': 10, 'Ter': 12, 'Qua': 14, 'Qui': 17, 'Sex': 19, 'Sáb': 22, 'Dom': None}
-    
+    # 4. MAPEAMENTO DOS HORÁRIOS PADRÃO
+    # Usa a coluna do "SEG" encontrada para buscar os outros dias
+    col_ref = markers['seg_col']
     agendamento = {}
-    for dia_chave, indice_linha in linhas_horario.items():
-        if indice_linha is None:
-            agendamento[dia_chave] = None
-            continue
-        
+    dias_sigla = ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM', 'SÁB']
+    
+    # Varre a coluna de referência para achar as linhas de cada dia
+    for r in range(markers['seg_row'], markers['seg_row'] + 20): # Olha 20 linhas para baixo
         try:
-            ent1 = limpar_celula_tempo(df.iloc[indice_linha, 26])
-            sai1 = limpar_celula_tempo(df.iloc[indice_linha, 28])
-            try:
-                ent2 = limpar_celula_tempo(df.iloc[indice_linha, 30])
-            except:
-                ent2 = None
+            celula = str(df.iloc[r, col_ref]).strip().upper()
+            # Mapeia SEG -> Seg, TER -> Ter...
+            dia_chave = None
+            if 'SEG' in celula: dia_chave = 'Seg'
+            elif 'TER' in celula: dia_chave = 'Ter'
+            elif 'QUA' in celula: dia_chave = 'Qua'
+            elif 'QUI' in celula: dia_chave = 'Qui'
+            elif 'SEX' in celula: dia_chave = 'Sex'
+            elif 'SAB' in celula or 'SÁB' in celula: dia_chave = 'Sáb'
+            elif 'DOM' in celula: dia_chave = 'Dom'
             
-            agendamento[dia_chave] = {'std_ent1': ent1, 'std_sai1': sai1, 'std_ent2': ent2}
-        except IndexError:
-             agendamento[dia_chave] = {'std_ent1': None, 'std_sai1': None, 'std_ent2': None}
+            if dia_chave:
+                # Assume que os horários estão deslocados +2, +4, +6 colunas (padrão observado nos dois arquivos)
+                ent1 = limpar_celula_tempo(df.iloc[r, col_ref + 2])
+                sai1 = limpar_celula_tempo(df.iloc[r, col_ref + 4])
+                try: ent2 = limpar_celula_tempo(df.iloc[r, col_ref + 6])
+                except: ent2 = None
+                
+                agendamento[dia_chave] = {'std_ent1': ent1, 'std_sai1': sai1, 'std_ent2': ent2}
+        except:
+            pass
 
-    # 3. Processamento das batidas
-    linhas_dados = df.iloc[31:].copy()
+    # 5. PROCESSAMENTO DAS BATIDAS
+    # Começa 3 linhas após o cabeçalho "ENTRADA 1" (Padrão observado: Header -> Vazio -> Totais -> Dados)
+    start_row = markers['header_row'] + 3
+    linhas_dados = df.iloc[start_row:].copy()
+    
     dias_com_atraso = []
     total_ocorrencias_geral = 0
     tolerancia = timedelta(minutes=5)
@@ -155,20 +174,22 @@ def processar_ponto(uploaded_file):
         else: chave_dow = dow_val
             
         if chave_dow not in agendamento or agendamento[chave_dow] is None: continue
-        
         padrao = agendamento[chave_dow]
         
-        real_ent1 = limpar_celula_tempo(row[3]) 
-        real_sai1 = limpar_celula_tempo(row[7]) 
-        real_ent2 = limpar_celula_tempo(row[10]) 
+        # Usa as colunas encontradas dinamicamente
+        real_ent1 = limpar_celula_tempo(row[markers['col_ent1_real']])
+        real_sai1 = limpar_celula_tempo(row[markers['col_sai1_real']])
+        real_ent2 = limpar_celula_tempo(row[markers['col_ent2_real']])
         
         motivos = []
         
+        # Atraso Entrada Manhã
         if padrao['std_ent1'] and real_ent1:
             limite = padrao['std_ent1'] + tolerancia
             if real_ent1 > limite: 
                 motivos.append(f"Manhã ({formatar_visual(real_ent1)})")
         
+        # Atraso Volta Almoço
         if padrao['std_ent2'] and padrao['std_sai1'] and real_sai1 and real_ent2:
             duracao = padrao['std_ent2'] - padrao['std_sai1']
             limite = real_sai1 + duracao + tolerancia
@@ -218,10 +239,9 @@ if pagina == "📂 Análise de Ponto":
     arquivo = st.file_uploader("Carregue o arquivo de Ponto (XLSX ou CSV)", type=['csv', 'xlsx'])
 
     if arquivo:
-        with st.spinner('Analisando dados...'):
+        with st.spinner('Analisando estrutura e dados...'):
             nome, df_resultado, total_ocorrencias = processar_ponto(arquivo)
         
-        # Só exibe os resultados se o nome foi retornado (sinal de sucesso)
         if nome:
             st.success(f"Funcionário: **{nome}**")
             st.session_state['ultimo_total_atrasos'] = total_ocorrencias
@@ -310,7 +330,6 @@ elif pagina == "💸 Conferência Pix":
         pix_entries = [] 
         
         try:
-            # Detecta se é Excel ou CSV
             if uploaded_pix.name.endswith('.xlsx'):
                 df_pix = pd.read_excel(uploaded_pix, header=None)
             else:
@@ -321,7 +340,6 @@ elif pagina == "💸 Conferência Pix":
                     uploaded_pix.seek(0)
                     df_pix = pd.read_csv(uploaded_pix, header=None, encoding='latin1', sep=None, engine='python')
 
-            # Extração: Coluna D (índice 3)
             if len(df_pix.columns) > 3:
                 col_d = df_pix[[2, 3]].dropna()
                 for index, row in col_d.iterrows():
@@ -333,7 +351,6 @@ elif pagina == "💸 Conferência Pix":
                         except:
                             pass
             
-            # Extração: Coluna I (índice 8)
             if len(df_pix.columns) > 8:
                 col_i = df_pix[[7, 8]].dropna()
                 for index, row in col_i.iterrows():
@@ -400,10 +417,8 @@ elif pagina == "💸 Conferência Pix":
             
             extra_in_bb = bb_pool
             
-            # --- Exibição ---
             st.divider()
             st.subheader("📊 Resultados Detalhados")
-            
             col1, col2, col3 = st.columns(3)
             col1.metric("Confirmados", len(matched_entries))
             col2.metric("Faltam no Banco", len(missing_entries), delta_color="inverse")
@@ -437,8 +452,6 @@ elif pagina == "💸 Conferência Pix":
 # ==============================================================================
 
 elif pagina == "📊 Análise DRE":
-    
-    # --- CHECK DE SENHA ---
     if not check_password():
         st.stop()
     
