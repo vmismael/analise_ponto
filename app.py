@@ -86,7 +86,7 @@ def processar_ponto(uploaded_file):
     except:
         nome_funcionario = "Nome não encontrado"
 
-    linhas_horario = {'Seg': 11, 'Ter': 13, 'Qua': 15, 'Qui': 18, 'Sex': 20, 'Sáb': 23, 'Dom': None}
+    linhas_horario = {'Seg': 10, 'Ter': 12, 'Qua': 14, 'Qui': 17, 'Sex': 19, 'Sáb': 22, 'Dom': None}
     agendamento = {}
     for dia_chave, indice_linha in linhas_horario.items():
         if indice_linha is None:
@@ -459,4 +459,5 @@ elif pagina == "📊 Análise DRE":
         except Exception as e:
             st.error(f"Erro ao processar o arquivo: {e}")
             st.info("Verifique se o arquivo tem as colunas 'Classificação' e 'Movimento'.")
+
 
