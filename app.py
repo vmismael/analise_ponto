@@ -81,14 +81,40 @@ def processar_ponto(uploaded_file):
         st.error(f"Erro ao ler o arquivo: {e}")
         return None, None, 0
 
-    # 1. Tenta pegar o nome do funcionário (Linha 18, Coluna 0 no arquivo analisado)
+    # ==========================================================================
+    # 🛡️ BLOCO DE SEGURANÇA / VALIDAÇÃO DE LAYOUT
+    # ==========================================================================
+    # Verifica se os marcadores 'SEG' e 'ENT.1' estão onde esperamos (Linhas 10 e 9)
+    try:
+        # Célula onde deve estar escrito "SEG" (Linha 11 do Excel = Índice 10, Coluna 25 = Índice 24)
+        check_seg = str(df.iloc[10, 24]).strip().upper()
+        # Célula onde deve estar escrito "ENT.1" (Linha 10 do Excel = Índice 9, Coluna 27 = Índice 26)
+        check_ent = str(df.iloc[9, 26]).strip().upper()
+        
+        # Se não encontrar "SEG" ou "ENT", o arquivo está desalinhado
+        if "SEG" not in check_seg or "ENT" not in check_ent:
+            st.error(
+                f"⚠️ **ERRO CRÍTICO DE LAYOUT**: O arquivo não corresponde ao modelo esperado.\n\n"
+                f"O sistema procurou 'SEG' na linha 11 e 'ENT.1' na linha 10, mas encontrou:\n"
+                f"👉 '{check_seg}' e '{check_ent}'\n\n"
+                f"Provavelmente colunas ou linhas foram adicionadas/removidas no arquivo original."
+            )
+            return None, None, 0
+    except IndexError:
+        st.error("⚠️ **ERRO DE ARQUIVO**: O arquivo é menor do que o esperado (falta linhas ou colunas).")
+        return None, None, 0
+    except Exception as e:
+        st.error(f"⚠️ Erro desconhecido na validação: {e}")
+        return None, None, 0
+    # ==========================================================================
+
+    # 1. Tenta pegar o nome do funcionário
     try:
         nome_funcionario = df.iloc[18, 0]
     except:
         nome_funcionario = "Nome não encontrado"
 
-    # 2. Mapeamento das linhas onde estão os HORÁRIOS PADRÃO (Cabeçalho à direita)
-    # Seg=10, Ter=12, Qua=14, Qui=17, Sex=19, Sáb=22
+    # 2. Mapeamento das linhas onde estão os HORÁRIOS PADRÃO
     linhas_horario = {'Seg': 10, 'Ter': 12, 'Qua': 14, 'Qui': 17, 'Sex': 19, 'Sáb': 22, 'Dom': None}
     
     agendamento = {}
@@ -97,11 +123,9 @@ def processar_ponto(uploaded_file):
             agendamento[dia_chave] = None
             continue
         
-        # Colunas do cabeçalho de horário: Ent1=26, Sai1=28, Ent2=30
         try:
             ent1 = limpar_celula_tempo(df.iloc[indice_linha, 26])
             sai1 = limpar_celula_tempo(df.iloc[indice_linha, 28])
-            # Tratamento para Sábado que pode não ter 2º turno
             try:
                 ent2 = limpar_celula_tempo(df.iloc[indice_linha, 30])
             except:
@@ -109,17 +133,15 @@ def processar_ponto(uploaded_file):
             
             agendamento[dia_chave] = {'std_ent1': ent1, 'std_sai1': sai1, 'std_ent2': ent2}
         except IndexError:
-             # Caso a linha exista mas a coluna não
              agendamento[dia_chave] = {'std_ent1': None, 'std_sai1': None, 'std_ent2': None}
 
-    # 3. Processamento das batidas (Começa na linha 31)
+    # 3. Processamento das batidas
     linhas_dados = df.iloc[31:].copy()
     dias_com_atraso = []
     total_ocorrencias_geral = 0
     tolerancia = timedelta(minutes=5)
 
     for idx, row in linhas_dados.iterrows():
-        # Data está na coluna 0
         data_str = str(row[0])
         if pd.isna(data_str) or '-' not in data_str: continue
         
@@ -128,7 +150,6 @@ def processar_ponto(uploaded_file):
         data_val = partes[0].strip()
         dow_val = partes[1].strip()
         
-        # Ajuste do nome do dia da semana
         if 'Sáb' in dow_val or 'Sab' in dow_val: chave_dow = 'Sáb'
         elif 'Dom' in dow_val: chave_dow = 'Dom'
         else: chave_dow = dow_val
@@ -137,21 +158,17 @@ def processar_ponto(uploaded_file):
         
         padrao = agendamento[chave_dow]
         
-        # Colunas das batidas REAIS: Ent1=3, Sai1=7, Ent2=10
-        # (Atenção: row é Series, acessamos pelo índice da coluna)
         real_ent1 = limpar_celula_tempo(row[3]) 
         real_sai1 = limpar_celula_tempo(row[7]) 
         real_ent2 = limpar_celula_tempo(row[10]) 
         
         motivos = []
         
-        # Verifica Atraso Entrada Manhã
         if padrao['std_ent1'] and real_ent1:
             limite = padrao['std_ent1'] + tolerancia
             if real_ent1 > limite: 
                 motivos.append(f"Manhã ({formatar_visual(real_ent1)})")
         
-        # Verifica Atraso Volta do Almoço
         if padrao['std_ent2'] and padrao['std_sai1'] and real_sai1 and real_ent2:
             duracao = padrao['std_ent2'] - padrao['std_sai1']
             limite = real_sai1 + duracao + tolerancia
@@ -203,6 +220,8 @@ if pagina == "📂 Análise de Ponto":
     if arquivo:
         with st.spinner('Analisando dados...'):
             nome, df_resultado, total_ocorrencias = processar_ponto(arquivo)
+        
+        # Só exibe os resultados se o nome foi retornado (sinal de sucesso)
         if nome:
             st.success(f"Funcionário: **{nome}**")
             st.session_state['ultimo_total_atrasos'] = total_ocorrencias
@@ -368,8 +387,8 @@ elif pagina == "💸 Conferência Pix":
         if pix_entries and bb_values:
             
             bb_pool = list(bb_values)
-            missing_entries = [] # Pix que não achou no BB
-            matched_entries = [] # Pix que achou no BB
+            missing_entries = [] 
+            matched_entries = [] 
             
             for entry in pix_entries:
                 val = entry['valor']
