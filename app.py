@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-from collections import Counter # Necessário para a conferência do Pix
+from collections import Counter
 import re
 import io
 
@@ -81,52 +81,82 @@ def processar_ponto(uploaded_file):
         st.error(f"Erro ao ler o arquivo: {e}")
         return None, None, 0
 
+    # 1. Tenta pegar o nome do funcionário (Linha 18, Coluna 0 no arquivo analisado)
     try:
         nome_funcionario = df.iloc[18, 0]
     except:
         nome_funcionario = "Nome não encontrado"
 
+    # 2. Mapeamento das linhas onde estão os HORÁRIOS PADRÃO (Cabeçalho à direita)
+    # Seg=10, Ter=12, Qua=14, Qui=17, Sex=19, Sáb=22
     linhas_horario = {'Seg': 10, 'Ter': 12, 'Qua': 14, 'Qui': 17, 'Sex': 19, 'Sáb': 22, 'Dom': None}
+    
     agendamento = {}
     for dia_chave, indice_linha in linhas_horario.items():
         if indice_linha is None:
             agendamento[dia_chave] = None
             continue
-        ent1 = limpar_celula_tempo(df.iloc[indice_linha, 24])
-        sai1 = limpar_celula_tempo(df.iloc[indice_linha, 26])
-        ent2 = limpar_celula_tempo(df.iloc[indice_linha, 28])
-        agendamento[dia_chave] = {'std_ent1': ent1, 'std_sai1': sai1, 'std_ent2': ent2}
+        
+        # Colunas do cabeçalho de horário: Ent1=26, Sai1=28, Ent2=30
+        try:
+            ent1 = limpar_celula_tempo(df.iloc[indice_linha, 26])
+            sai1 = limpar_celula_tempo(df.iloc[indice_linha, 28])
+            # Tratamento para Sábado que pode não ter 2º turno
+            try:
+                ent2 = limpar_celula_tempo(df.iloc[indice_linha, 30])
+            except:
+                ent2 = None
+            
+            agendamento[dia_chave] = {'std_ent1': ent1, 'std_sai1': sai1, 'std_ent2': ent2}
+        except IndexError:
+             # Caso a linha exista mas a coluna não
+             agendamento[dia_chave] = {'std_ent1': None, 'std_sai1': None, 'std_ent2': None}
 
+    # 3. Processamento das batidas (Começa na linha 31)
     linhas_dados = df.iloc[31:].copy()
     dias_com_atraso = []
     total_ocorrencias_geral = 0
     tolerancia = timedelta(minutes=5)
 
     for idx, row in linhas_dados.iterrows():
+        # Data está na coluna 0
         data_str = str(row[0])
         if pd.isna(data_str) or '-' not in data_str: continue
+        
         partes = data_str.split('-')
         if len(partes) < 2: continue
         data_val = partes[0].strip()
         dow_val = partes[1].strip()
+        
+        # Ajuste do nome do dia da semana
         if 'Sáb' in dow_val or 'Sab' in dow_val: chave_dow = 'Sáb'
         elif 'Dom' in dow_val: chave_dow = 'Dom'
         else: chave_dow = dow_val
             
         if chave_dow not in agendamento or agendamento[chave_dow] is None: continue
+        
         padrao = agendamento[chave_dow]
-        real_ent1 = limpar_celula_tempo(row[2]) 
-        real_sai1 = limpar_celula_tempo(row[5]) 
-        real_ent2 = limpar_celula_tempo(row[8]) 
+        
+        # Colunas das batidas REAIS: Ent1=3, Sai1=7, Ent2=10
+        # (Atenção: row é Series, acessamos pelo índice da coluna)
+        real_ent1 = limpar_celula_tempo(row[3]) 
+        real_sai1 = limpar_celula_tempo(row[7]) 
+        real_ent2 = limpar_celula_tempo(row[10]) 
+        
         motivos = []
         
+        # Verifica Atraso Entrada Manhã
         if padrao['std_ent1'] and real_ent1:
             limite = padrao['std_ent1'] + tolerancia
-            if real_ent1 > limite: motivos.append(f"Manhã ({formatar_visual(real_ent1)})")
+            if real_ent1 > limite: 
+                motivos.append(f"Manhã ({formatar_visual(real_ent1)})")
+        
+        # Verifica Atraso Volta do Almoço
         if padrao['std_ent2'] and padrao['std_sai1'] and real_sai1 and real_ent2:
             duracao = padrao['std_ent2'] - padrao['std_sai1']
             limite = real_sai1 + duracao + tolerancia
-            if real_ent2 > limite: motivos.append(f"Volta Almoço (Lim {formatar_visual(limite)} vs Real {formatar_visual(real_ent2)})")
+            if real_ent2 > limite: 
+                motivos.append(f"Volta Almoço (Lim {formatar_visual(limite)} vs Real {formatar_visual(real_ent2)})")
 
         if motivos:
             qtd = len(motivos)
@@ -158,7 +188,6 @@ def buscar_por_classificacao(df, codigo):
 # ==============================================================================
 
 st.sidebar.title("Navegação")
-# Adicionado "💸 Conferência Pix" ao menu
 pagina = st.sidebar.radio("Ir para:", ["📂 Análise de Ponto", "💰 Calc. Vale Alimentação", "💸 Conferência Pix", "📊 Análise DRE"])
 st.sidebar.markdown("---")
 
@@ -239,7 +268,7 @@ elif pagina == "💰 Calc. Vale Alimentação":
     else: st.error(mensagem_penalidade)
 
 # ==============================================================================
-# PÁGINA 3: CONFERÊNCIA PIX (NOVO MÓDULO)
+# PÁGINA 3: CONFERÊNCIA PIX
 # ==============================================================================
 
 elif pagina == "💸 Conferência Pix":
@@ -259,7 +288,7 @@ elif pagina == "💸 Conferência Pix":
         st.divider()
         
         # --- PROCESSAMENTO DA PLANILHA PIX ---
-        pix_entries = [] # Lista de dicionários: {'val': 10.0, 'row': 5, 'col': 'D'}
+        pix_entries = [] 
         
         try:
             # Detecta se é Excel ou CSV
@@ -281,7 +310,6 @@ elif pagina == "💸 Conferência Pix":
                     if "Total" not in label:
                         try:
                             val = float(row[3])
-                            # index + 1 para corresponder à linha do Excel
                             pix_entries.append({'valor': val, 'linha': index + 1, 'coluna': 'D'})
                         except:
                             pass
@@ -459,5 +487,3 @@ elif pagina == "📊 Análise DRE":
         except Exception as e:
             st.error(f"Erro ao processar o arquivo: {e}")
             st.info("Verifique se o arquivo tem as colunas 'Classificação' e 'Movimento'.")
-
-
